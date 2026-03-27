@@ -692,9 +692,9 @@ function App() {
           Buy Me a Coffee
         </a>
         <span className="footer-sep">|</span>
-        <a href="#" target="_blank" rel="noreferrer">Feedback</a>
+        <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>
         <span className="footer-sep">|</span>
-        <a href="#" target="_blank" rel="noreferrer">Report Issue</a>
+        <a href="https://github.com/EerieGoesD/deck-transfer/issues" target="_blank" rel="noreferrer">Report Issue</a>
       </div>
 
       <input

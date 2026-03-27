@@ -24,3 +24,8 @@ desktop.ini
 
 # Logs
 *.log
+
+# Build artifacts
+*.msix
+msix-dist/
+build-msix.bat
