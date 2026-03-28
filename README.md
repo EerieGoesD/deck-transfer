@@ -30,10 +30,6 @@ sudo systemctl start sshd
 
 Get the latest release from the [Releases page](https://github.com/EerieGoesD/deck-transfer/releases).
 
-- **Portable EXE** - no install needed, just run
-- **Installer** - NSIS setup wizard
-- **MSIX** - Microsoft Store format
-
 ## Feedback
 
 - Made by [EERIE](https://eeriegoesd.com)
