@@ -7,12 +7,10 @@ A desktop app for transferring files from your PC to a Steam Deck over Ethernet 
 - Drag-and-drop or browse to queue files
 - Browse and navigate the Deck's file system
 - Pause, resume, and cancel individual transfers
-- Adjustable speed limiter (changes take effect mid-transfer)
 - Auto-detects Steam Deck on the network
 - One-click Direct Ethernet adapter setup (no manual static IPs)
 - Conflict detection for existing files (replace, skip, or cancel)
 - Debug window for troubleshooting connection issues
-- Auto-clear completed files option
 
 ## Requirements
 
@@ -49,6 +47,3 @@ npm run tauri dev
 npm run tauri build
 ```
 
-## License
-
-MIT
