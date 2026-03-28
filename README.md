@@ -33,3 +33,10 @@ Get the latest release from the [Releases page](https://github.com/EerieGoesD/de
 - **Portable EXE** - no install needed, just run
 - **Installer** - NSIS setup wizard
 - **MSIX** - Microsoft Store format
+
+## Feedback
+
+- Made by [EERIE](https://eeriegoesd.com)
+- [Buy Me a Coffee](https://buymeacoffee.com/eeriegoesd)
+- [Report Issue](https://github.com/EerieGoesD/deck-transfer/issues)
+- [Feedback](https://github.com/EerieGoesD/deck-transfer/discussions)
