@@ -9,6 +9,15 @@ pub struct EthernetInterface {
 
 /// Find active ethernet interfaces (not WiFi, not loopback, not virtual).
 pub fn find_ethernet_interfaces() -> Result<Vec<EthernetInterface>, String> {
+    find_interfaces_by_mode("ethernet")
+}
+
+/// Find active WiFi interfaces.
+pub fn find_wifi_interfaces() -> Result<Vec<EthernetInterface>, String> {
+    find_interfaces_by_mode("wifi")
+}
+
+fn find_interfaces_by_mode(mode: &str) -> Result<Vec<EthernetInterface>, String> {
     let interfaces = NetworkInterface::show()
         .map_err(|e| format!("Cannot list interfaces: {}", e))?;
 
@@ -17,13 +26,8 @@ pub fn find_ethernet_interfaces() -> Result<Vec<EthernetInterface>, String> {
     for iface in interfaces {
         let name_lower = iface.name.to_lowercase();
 
-        // Skip loopback, WiFi, virtual adapters
+        // Always skip loopback and virtual adapters
         if name_lower.contains("loopback")
-            || name_lower.contains("lo")
-            || name_lower.contains("wi-fi")
-            || name_lower.contains("wifi")
-            || name_lower.contains("wlan")
-            || name_lower.contains("wireless")
             || name_lower.contains("vethernet")
             || name_lower.contains("docker")
             || name_lower.contains("vmware")
@@ -34,16 +38,32 @@ pub fn find_ethernet_interfaces() -> Result<Vec<EthernetInterface>, String> {
             continue;
         }
 
-        // Look for "ethernet" in name or generic adapter names
-        let is_ethernet = name_lower.contains("ethernet")
-            || name_lower.contains("eth")
-            || name_lower.contains("enp")
-            || name_lower.contains("eno")
-            || name_lower.contains("ens")
-            || name_lower.contains("realtek")
-            || name_lower.contains("intel");
+        let matches = if mode == "wifi" {
+            name_lower.contains("wi-fi")
+                || name_lower.contains("wifi")
+                || name_lower.contains("wlan")
+                || name_lower.contains("wireless")
+        } else {
+            // Skip WiFi for ethernet mode
+            if name_lower.contains("wi-fi")
+                || name_lower.contains("wifi")
+                || name_lower.contains("wlan")
+                || name_lower.contains("wireless")
+                || name_lower.contains("lo")
+            {
+                false
+            } else {
+                name_lower.contains("ethernet")
+                    || name_lower.contains("eth")
+                    || name_lower.contains("enp")
+                    || name_lower.contains("eno")
+                    || name_lower.contains("ens")
+                    || name_lower.contains("realtek")
+                    || name_lower.contains("intel")
+            }
+        };
 
-        if !is_ethernet {
+        if !matches {
             continue;
         }
 
@@ -72,6 +92,45 @@ pub fn find_ethernet_interfaces() -> Result<Vec<EthernetInterface>, String> {
     }
 
     Ok(result)
+}
+
+/// Find the name of the first ethernet adapter, even if it has no IP assigned.
+pub fn find_ethernet_interface_name() -> Option<String> {
+    let interfaces = NetworkInterface::show().ok()?;
+
+    for iface in interfaces {
+        let name_lower = iface.name.to_lowercase();
+
+        if name_lower.contains("loopback")
+            || name_lower.contains("vethernet")
+            || name_lower.contains("docker")
+            || name_lower.contains("vmware")
+            || name_lower.contains("virtualbox")
+            || name_lower.contains("hyper-v")
+            || name_lower.contains("vbox")
+            || name_lower.contains("wi-fi")
+            || name_lower.contains("wifi")
+            || name_lower.contains("wlan")
+            || name_lower.contains("wireless")
+            || name_lower.contains("lo")
+        {
+            continue;
+        }
+
+        let is_ethernet = name_lower.contains("ethernet")
+            || name_lower.contains("eth")
+            || name_lower.contains("enp")
+            || name_lower.contains("eno")
+            || name_lower.contains("ens")
+            || name_lower.contains("realtek")
+            || name_lower.contains("intel");
+
+        if is_ethernet {
+            return Some(iface.name.clone());
+        }
+    }
+
+    None
 }
 
 /// Generate IP candidates to scan on the same subnet.

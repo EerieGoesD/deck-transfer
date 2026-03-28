@@ -10,7 +10,7 @@ interface FileEntry {
   progress: number;
   speed: number;
   eta: number;
-  status: "pending" | "transferring" | "complete" | "error";
+  status: "pending" | "transferring" | "paused" | "complete" | "error";
   error?: string;
 }
 
@@ -31,6 +31,23 @@ interface Conflict {
   localSize: number;
   remoteSize: number;
 }
+
+interface Settings {
+  speedLimit: number; // bytes/sec, 0 = unlimited
+  autoClear: boolean;
+  connectionMode: "ethernet" | "wifi";
+  directEthernet: boolean | null; // null = not yet checked
+}
+
+const SPEED_OPTIONS = [
+  { label: "Unlimited", value: 0 },
+  { label: "1 MB/s", value: 1024 * 1024 },
+  { label: "5 MB/s", value: 5 * 1024 * 1024 },
+  { label: "10 MB/s", value: 10 * 1024 * 1024 },
+  { label: "25 MB/s", value: 25 * 1024 * 1024 },
+  { label: "50 MB/s", value: 50 * 1024 * 1024 },
+  { label: "100 MB/s", value: 100 * 1024 * 1024 },
+];
 
 type ConflictAction = "replace" | "skip" | "replace-all" | "skip-all" | "cancel";
 
@@ -84,6 +101,65 @@ function App() {
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [showConflictDialog, setShowConflictDialog] = useState(false);
   const conflictResolveRef = useRef<((action: ConflictAction) => void) | null>(null);
+
+  const [settings, setSettings] = useState<Settings>({
+    speedLimit: 0,
+    autoClear: false,
+    connectionMode: "ethernet",
+    directEthernet: null,
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const [ethernetToggling, setEthernetToggling] = useState(false);
+  const ethernetTogglingRef = useRef(false);
+
+  // Check direct ethernet status on mount
+  useEffect(() => {
+    invoke<boolean>("get_direct_ethernet_status").then((enabled) => {
+      setSettings((s) => ({ ...s, directEthernet: enabled }));
+    });
+  }, []);
+
+  const uiLog = useCallback((msg: string) => {
+    invoke("frontend_log", { msg }).catch(() => {});
+  }, []);
+
+  const toggleDirectEthernet = useCallback(async (enable: boolean) => {
+    uiLog(`toggleDirectEthernet called: enable=${enable}, ref=${ethernetTogglingRef.current}`);
+    if (ethernetTogglingRef.current) {
+      uiLog("BLOCKED by ref guard");
+      return;
+    }
+    ethernetTogglingRef.current = true;
+    setEthernetToggling(true);
+    uiLog(`Calling ${enable ? "enable" : "disable"}_direct_ethernet...`);
+    try {
+      if (enable) {
+        await invoke("enable_direct_ethernet");
+      } else {
+        await invoke("disable_direct_ethernet");
+      }
+      uiLog("Backend call completed OK");
+    } catch (e) {
+      uiLog(`Backend call FAILED: ${e}`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const status = await invoke<boolean>("get_direct_ethernet_status");
+      uiLog(`Status re-check: ${status}`);
+      setSettings((s) => ({ ...s, directEthernet: status }));
+    } catch (_) {}
+    ethernetTogglingRef.current = false;
+    setEthernetToggling(false);
+    uiLog("Toggle complete, ref released");
+  }, [uiLog]);
+
+  const openDebugWindow = useCallback(async () => {
+    try {
+      await invoke("open_debug_window");
+    } catch (e) {
+      console.error("Failed to open debug window:", e);
+    }
+  }, []);
 
   // Listen for scan progress
   useEffect(() => {
@@ -184,6 +260,7 @@ function App() {
     try {
       const result = await invoke<DeckInfo>("scan_for_deck", {
         deckPassword: password,
+        connectionMode: settings.connectionMode,
       });
       setDeck(result);
     } catch (e) {
@@ -192,7 +269,7 @@ function App() {
     } finally {
       setScanning(false);
     }
-  }, [password]);
+  }, [password, settings.connectionMode]);
 
   const addFiles = useCallback((paths: string[], sizes: number[]) => {
     const newFiles: FileEntry[] = paths.map((path, i) => ({
@@ -258,7 +335,7 @@ function App() {
   }, []);
 
   const transferWithRetry = useCallback(
-    async (file: FileEntry, deckIp: string, deckPw: string, remoteDir: string) => {
+    async (file: FileEntry, deckIp: string, deckPw: string, remoteDir: string, speedLimit: number) => {
       let lastError = "";
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -268,6 +345,7 @@ function App() {
             deckIp,
             deckPassword: deckPw,
             remoteDir,
+            speedLimit: speedLimit > 0 ? speedLimit : null,
           });
           return; // success
         } catch (e) {
@@ -275,7 +353,9 @@ function App() {
           const isRetryable =
             lastError.includes("exchange encryption") ||
             lastError.includes("handshake") ||
-            lastError.includes("Connection reset");
+            lastError.includes("Connection reset") ||
+            lastError.includes("Unable to send channel data") ||
+            lastError.includes("channel data");
           if (!isRetryable || attempt === MAX_RETRIES) {
             throw new Error(lastError);
           }
@@ -286,6 +366,59 @@ function App() {
       throw new Error(lastError);
     },
     []
+  );
+
+  const pauseFile = useCallback(async (fileId: string) => {
+    await invoke("pause_transfer", { fileId });
+    setFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, status: "paused" as const, speed: 0 } : f))
+    );
+  }, []);
+
+  const resumeFile = useCallback(async (fileId: string) => {
+    await invoke("resume_transfer", { fileId });
+    setFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, status: "transferring" as const } : f))
+    );
+  }, []);
+
+  const cancelFile = useCallback(async (fileId: string) => {
+    await invoke("cancel_transfer", { fileId });
+  }, []);
+
+  const retryFile = useCallback(
+    async (fileId: string) => {
+      if (!deck) return;
+      const file = files.find((f) => f.id === fileId);
+      if (!file) return;
+
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? { ...f, status: "transferring", progress: 0, speed: 0, eta: 0, error: undefined }
+            : f
+        )
+      );
+
+      try {
+        await transferWithRetry(file, deck.ip, password, currentDir, settings.speedLimit);
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === fileId
+              ? { ...f, status: "complete", progress: 100, speed: 0, eta: 0 }
+              : f
+          )
+        );
+        loadDir(currentDir);
+      } catch (e) {
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === fileId ? { ...f, status: "error", error: String(e) } : f
+          )
+        );
+      }
+    },
+    [deck, files, password, currentDir, settings.speedLimit, loadDir, transferWithRetry]
   );
 
   const startTransfer = useCallback(async () => {
@@ -359,7 +492,7 @@ function App() {
         );
 
         try {
-          await transferWithRetry(file, deck.ip, password, currentDir);
+          await transferWithRetry(file, deck.ip, password, currentDir, settings.speedLimit);
 
           setFiles((prev) =>
             prev.map((f) =>
@@ -381,11 +514,16 @@ function App() {
       }
 
       setTransferring(false);
+
+      // Auto-clear completed files if enabled
+      if (settings.autoClear) {
+        setFiles((prev) => prev.filter((f) => f.status !== "complete"));
+      }
     } catch (e) {
       console.error("Pre-transfer check failed:", e);
       setTransferring(false);
     }
-  }, [deck, files, password, currentDir, loadDir, transferWithRetry]);
+  }, [deck, files, password, currentDir, loadDir, transferWithRetry, settings.speedLimit, settings.autoClear]);
 
   const pendingFiles = files.filter((f) => f.status !== "complete");
   const breadcrumbs = currentDir.split("/").filter(Boolean);
@@ -396,13 +534,154 @@ function App() {
     <div className="app">
       <div className="header">
         <h1>Deck Transfer</h1>
-        <div
-          className={`connection-status ${deck ? "connected" : scanning ? "scanning" : "disconnected"}`}
-        >
-          <span className={`status-dot ${scanning ? "scanning" : ""}`} />
-          {deck ? "Connected" : scanning ? "Scanning..." : "Not connected"}
+        <div className="header-right">
+          {deck && (
+            <div className="speed-limit-control">
+              <label htmlFor="speed-limit">Speed:</label>
+              <select
+                id="speed-limit"
+                value={settings.speedLimit}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setSettings((s) => ({ ...s, speedLimit: val }));
+                  invoke("set_speed_limit", { limit: val }).catch(() => {});
+                }}
+              >
+                {SPEED_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div
+            className={`connection-status ${deck ? "connected" : scanning ? "scanning" : "disconnected"}`}
+          >
+            <span className={`status-dot ${scanning ? "scanning" : ""}`} />
+            {deck
+              ? `Connected (${settings.connectionMode === "wifi" ? "Wi-Fi" : "Ethernet"})`
+              : scanning
+              ? "Scanning..."
+              : "Not connected"}
+          </div>
+          <button
+            className="settings-btn"
+            onClick={() => setShowSettings((s) => !s)}
+            title="Settings"
+          >
+            &#9881;
+          </button>
         </div>
       </div>
+
+      {showSettings && (
+        <div className="settings-panel">
+          <div className="settings-header">
+            <span className="settings-title">Settings</span>
+            <button className="settings-close" onClick={() => setShowSettings(false)}>x</button>
+          </div>
+          <div className="settings-group">
+            <label className="settings-label">Connection mode</label>
+            <div className="radio-group">
+              <label className={`radio-option ${settings.connectionMode === "ethernet" ? "radio-active" : ""}`}>
+                <input
+                  type="radio"
+                  name="connectionMode"
+                  value="ethernet"
+                  checked={settings.connectionMode === "ethernet"}
+                  onChange={() => setSettings((s) => ({ ...s, connectionMode: "ethernet" }))}
+                  disabled={!!deck}
+                />
+                Ethernet
+              </label>
+              <label className={`radio-option ${settings.connectionMode === "wifi" ? "radio-active" : ""}`}>
+                <input
+                  type="radio"
+                  name="connectionMode"
+                  value="wifi"
+                  checked={settings.connectionMode === "wifi"}
+                  onChange={() => setSettings((s) => ({ ...s, connectionMode: "wifi" }))}
+                  disabled={!!deck}
+                />
+                Wi-Fi
+              </label>
+            </div>
+            {!!deck && (
+              <button
+                className="btn-disconnect"
+                onClick={() => {
+                  setDeck(null);
+                  setFiles([]);
+                  setDirEntries([]);
+                  setScanError(null);
+                }}
+              >
+                Disconnect
+              </button>
+            )}
+          </div>
+          <div className="settings-group">
+            <label className="settings-label">Direct Ethernet mode</label>
+            <div className="direct-ethernet-row">
+              <span className={`direct-ethernet-status ${settings.directEthernet ? "enabled" : "disabled"}`}>
+                {settings.directEthernet === null
+                  ? "Checking..."
+                  : settings.directEthernet
+                  ? "Enabled"
+                  : "Disabled"}
+              </span>
+              <button
+                className={`btn-toggle ${ethernetToggling ? "btn-toggle-loading" : settings.directEthernet ? "btn-toggle-off" : "btn-toggle-on"}`}
+                onClick={() => { uiLog("[SETTINGS BTN] clicked, directEthernet=" + settings.directEthernet); toggleDirectEthernet(!settings.directEthernet); }}
+                disabled={settings.directEthernet === null || ethernetToggling}
+              >
+                {ethernetToggling ? "Configuring..." : settings.directEthernet ? "Disable" : "Enable"}
+              </button>
+            </div>
+            <span className="settings-hint">
+              {settings.directEthernet
+                ? "Your Ethernet adapter is configured for direct Deck connection. Disable if you have internet issues on Ethernet."
+                : "Enable to connect to a Steam Deck via a direct Ethernet cable. Windows will ask for permission once."}
+            </span>
+          </div>
+          <div className="settings-group">
+            <label className="settings-label">Transfer speed limit</label>
+            <select
+              className="settings-select"
+              value={settings.speedLimit}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setSettings((s) => ({ ...s, speedLimit: val }));
+                invoke("set_speed_limit", { limit: val }).catch(() => {});
+              }}
+            >
+              {SPEED_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="settings-group">
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={settings.autoClear}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, autoClear: e.target.checked }))
+                }
+              />
+              <span>Auto-clear files after successful transfer</span>
+            </label>
+          </div>
+          <div className="settings-group">
+            <button className="btn-debug" onClick={openDebugWindow}>
+              Open Debug Logs
+            </button>
+          </div>
+        </div>
+      )}
 
       {deck ? (
         <div className="main-layout">
@@ -554,23 +833,61 @@ function App() {
                       </div>
                       <div className="file-item-right">
                         {(file.status === "transferring" ||
+                          file.status === "paused" ||
                           file.status === "complete") && (
                           <div className="file-item-progress">
                             <div
-                              className={`file-item-progress-bar ${file.status === "complete" ? "complete" : ""}`}
+                              className={`file-item-progress-bar ${file.status === "complete" ? "complete" : file.status === "paused" ? "paused" : ""}`}
                               style={{ width: `${file.progress}%` }}
                             />
                           </div>
                         )}
                         <div
-                          className={`file-item-status ${file.status === "error" ? "status-error" : ""}`}
+                          className={`file-item-status ${file.status === "error" ? "status-error" : file.status === "paused" ? "status-paused" : ""}`}
                         >
                           {file.status === "pending" && "Waiting"}
                           {file.status === "transferring" && `${file.progress}%`}
+                          {file.status === "paused" && `${file.progress}%`}
                           {file.status === "complete" && "Done"}
                           {file.status === "error" && "Failed"}
                         </div>
-                        {file.status !== "transferring" && (
+                        {file.status === "transferring" && (
+                          <button
+                            className="pause-btn"
+                            onClick={() => pauseFile(file.id)}
+                            title="Pause transfer"
+                          >
+                            ||
+                          </button>
+                        )}
+                        {file.status === "paused" && (
+                          <button
+                            className="resume-btn"
+                            onClick={() => resumeFile(file.id)}
+                            title="Resume transfer"
+                          >
+                            &#9654;
+                          </button>
+                        )}
+                        {(file.status === "transferring" || file.status === "paused") && (
+                          <button
+                            className="cancel-btn"
+                            onClick={() => cancelFile(file.id)}
+                            title="Cancel transfer"
+                          >
+                            x
+                          </button>
+                        )}
+                        {file.status === "error" && !transferring && (
+                          <button
+                            className="retry-btn"
+                            onClick={() => retryFile(file.id)}
+                            title="Retry transfer"
+                          >
+                            &#8635;
+                          </button>
+                        )}
+                        {(file.status === "pending" || file.status === "error" || file.status === "complete") && (
                           <button
                             className="remove-btn"
                             onClick={() => removeFile(file.id)}
@@ -598,85 +915,149 @@ function App() {
         </div>
       ) : (
         <div className="setup-guide">
-          <h2>Connect your Steam Deck</h2>
-          <div className="setup-steps">
-            <div className="step">
-              <span className="step-number">1</span>
-              <span>Plug an ethernet cable between your PC and Steam Deck</span>
-            </div>
-            <div className="step">
-              <span className="step-number">2</span>
-              <div>
-                On the Deck, enable Developer Mode:
-                <br />
-                <span className="step-detail">
-                  Settings &gt; System &gt; Enable Developer Mode
-                </span>
-              </div>
-            </div>
-            <div className="step">
-              <span className="step-number">3</span>
-              <div>
-                Switch to Desktop Mode, open Konsole (terminal), and run:
-                <br />
-                <code>passwd</code>
-                <span className="step-detail"> - set a password for SSH login</span>
-                <br />
-                <code>sudo systemctl enable sshd</code>
-                <span className="step-detail"> - enable SSH on boot</span>
-                <br />
-                <code>sudo systemctl start sshd</code>
-                <span className="step-detail"> - start SSH now</span>
-              </div>
-            </div>
-            <div className="step">
-              <span className="step-number">4</span>
-              <span>Enter your Deck password below and click Scan</span>
-            </div>
-          </div>
+          <div className="setup-columns">
+            {/* Left column - connection config */}
+            <div className="setup-left">
+              <h2>Connect</h2>
 
-          <div className="password-field">
-            <label htmlFor="deck-password">Deck password</label>
-            <input
-              id="deck-password"
-              type="password"
-              placeholder="The password you set with passwd"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && password && !scanning) scanForDeck();
-              }}
-            />
-          </div>
+              <div className="setup-section">
+                <label className="setup-label">Connection</label>
+                <div className="connection-toggle">
+                  <label className={`toggle-option ${settings.connectionMode === "ethernet" ? "toggle-active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="setupConnectionMode"
+                      value="ethernet"
+                      checked={settings.connectionMode === "ethernet"}
+                      onChange={() => setSettings((s) => ({ ...s, connectionMode: "ethernet" }))}
+                    />
+                    Ethernet
+                  </label>
+                  <label className={`toggle-option ${settings.connectionMode === "wifi" ? "toggle-active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="setupConnectionMode"
+                      value="wifi"
+                      checked={settings.connectionMode === "wifi"}
+                      onChange={() => setSettings((s) => ({ ...s, connectionMode: "wifi" }))}
+                    />
+                    Wi-Fi
+                  </label>
+                </div>
+              </div>
 
-          {scanning && scanProgress.total > 0 && (
-            <div className="scan-progress-container">
-              <div className="scan-progress-bar">
-                <div
-                  className="scan-progress-fill"
-                  style={{
-                    width: `${Math.round((scanProgress.scanned / scanProgress.total) * 100)}%`,
+              {settings.connectionMode === "ethernet" && (
+                <div className="setup-section">
+                  <label className="setup-label">Direct Ethernet</label>
+                  <div className="direct-ethernet-row">
+                    <span className={`direct-ethernet-status ${settings.directEthernet ? "enabled" : "disabled"}`}>
+                      {settings.directEthernet === null
+                        ? "Checking..."
+                        : settings.directEthernet
+                        ? "Enabled"
+                        : "Disabled"}
+                    </span>
+                    <button
+                      className={`btn-toggle ${ethernetToggling ? "btn-toggle-loading" : settings.directEthernet ? "btn-toggle-off" : "btn-toggle-on"}`}
+                      onClick={() => { uiLog("[SETUP BTN] clicked, directEthernet=" + settings.directEthernet); toggleDirectEthernet(!settings.directEthernet); }}
+                      disabled={settings.directEthernet === null || ethernetToggling}
+                    >
+                      {ethernetToggling ? "Configuring..." : settings.directEthernet ? "Disable" : "Enable"}
+                    </button>
+                  </div>
+                  <span className="setup-hint">
+                    {settings.directEthernet
+                      ? "Configured for direct cable connection. Disable if Ethernet internet stops working."
+                      : "Required for direct cable to Deck. Windows will ask for permission once."}
+                  </span>
+                </div>
+              )}
+
+              <div className="setup-section">
+                <label className="setup-label" htmlFor="deck-password">Deck password</label>
+                <input
+                  id="deck-password"
+                  className="setup-input"
+                  type="password"
+                  placeholder="The password you set with passwd"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && password && !scanning) scanForDeck();
                   }}
                 />
               </div>
-              <div className="scan-progress-text">
-                Scanning {scanProgress.current_interface} -{" "}
-                {scanProgress.scanned}/{scanProgress.total} addresses
+
+              {scanning && scanProgress.total > 0 && (
+                <div className="scan-progress-container">
+                  <div className="scan-progress-bar">
+                    <div
+                      className="scan-progress-fill"
+                      style={{
+                        width: `${Math.round((scanProgress.scanned / scanProgress.total) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="scan-progress-text">
+                    Scanning {scanProgress.current_interface} -{" "}
+                    {scanProgress.scanned}/{scanProgress.total} addresses
+                  </div>
+                </div>
+              )}
+
+              {scanError && !scanning && (
+                <div className="scan-error">{scanError}</div>
+              )}
+
+              <button
+                className="scan-btn"
+                onClick={scanForDeck}
+                disabled={scanning || !password}
+              >
+                {scanning ? "Scanning..." : "Scan for Steam Deck"}
+              </button>
+            </div>
+
+            {/* Right column - setup instructions */}
+            <div className="setup-right">
+              <h2>Steam Deck Setup</h2>
+              <div className="setup-steps">
+                <div className="step">
+                  <span className="step-number">1</span>
+                  <span>
+                    {settings.connectionMode === "ethernet"
+                      ? "Plug an ethernet cable between your PC and Steam Deck"
+                      : "Connect your PC and Steam Deck to the same Wi-Fi network"}
+                  </span>
+                </div>
+                <div className="step">
+                  <span className="step-number">2</span>
+                  <div>
+                    On the Deck, enable Developer Mode:
+                    <br />
+                    <span className="step-detail">
+                      Settings &gt; System &gt; Enable Developer Mode
+                    </span>
+                  </div>
+                </div>
+                <div className="step">
+                  <span className="step-number">3</span>
+                  <div>
+                    Switch to Desktop Mode, open Konsole (terminal), and run:
+                    <br />
+                    <code>passwd</code>
+                    <span className="step-detail"> - set a password for SSH login</span>
+                    <br />
+                    <code>sudo systemctl enable sshd</code>
+                    <span className="step-detail"> - enable SSH on boot</span>
+                    <br />
+                    <code>sudo systemctl start sshd</code>
+                    <span className="step-detail"> - start SSH now</span>
+                  </div>
+                </div>
               </div>
             </div>
-          )}
-
-          {scanError && !scanning && (
-            <div className="scan-error">{scanError}</div>
-          )}
-
-          <button
-            className="scan-btn"
-            onClick={scanForDeck}
-            disabled={scanning || !password}
-          >
-            {scanning ? "Scanning..." : "Scan for Steam Deck"}
-          </button>
+          </div>
         </div>
       )}
 
@@ -688,7 +1069,7 @@ function App() {
           </a>
         </span>
         <span className="footer-sep">|</span>
-        <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer">
+        <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer" className="footer-coffee">
           Buy Me a Coffee
         </a>
         <span className="footer-sep">|</span>
