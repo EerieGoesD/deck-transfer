@@ -1,3 +1,8 @@
+mod store;
+mod history;
+mod sync;
+mod scheduler;
+
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io::{Read as IoRead, Write as IoWrite};
@@ -35,12 +40,12 @@ struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TransferProgress {
-    file_id: String,
-    bytes_sent: u64,
-    total_bytes: u64,
-    speed_bps: u64,
-    eta_seconds: u64,
+pub(crate) struct TransferProgress {
+    pub file_id: String,
+    pub bytes_sent: u64,
+    pub total_bytes: u64,
+    pub speed_bps: u64,
+    pub eta_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,16 +63,19 @@ static TRANSFER_STATE: once_cell::sync::Lazy<StdMutex<HashMap<String, Arc<Atomic
     once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
 
 // Global speed limit (bytes/sec, 0 = unlimited) - shared across all transfers
-static SPEED_LIMIT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static SPEED_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
-fn get_transfer_state(file_id: &str) -> Arc<AtomicU8> {
+// Minimize to tray toggle (1 = enabled, 0 = disabled)
+static MINIMIZE_TO_TRAY: AtomicU8 = AtomicU8::new(1);
+
+pub(crate) fn get_transfer_state(file_id: &str) -> Arc<AtomicU8> {
     let mut map = TRANSFER_STATE.lock().unwrap();
     map.entry(file_id.to_string())
         .or_insert_with(|| Arc::new(AtomicU8::new(0)))
         .clone()
 }
 
-fn clear_transfer_state(file_id: &str) {
+pub(crate) fn clear_transfer_state(file_id: &str) {
     if let Ok(mut map) = TRANSFER_STATE.lock() {
         map.remove(file_id);
     }
@@ -80,7 +88,7 @@ fn clear_transfer_state(file_id: &str) {
 static DEBUG_LOG_BUFFER: once_cell::sync::Lazy<StdMutex<VecDeque<String>>> =
     once_cell::sync::Lazy::new(|| StdMutex::new(VecDeque::with_capacity(500)));
 
-fn dbg_log(level: &str, msg: &str) {
+pub(crate) fn dbg_log(level: &str, msg: &str) {
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
     let line = format!("[{}] {} {}", timestamp, level, msg);
     if let Ok(mut buf) = DEBUG_LOG_BUFFER.lock() {
@@ -232,7 +240,7 @@ fn try_handshake(ip: &str, password: &str, strategy: usize) -> Result<ssh2::Sess
     Ok(session)
 }
 
-fn create_session(ip: &str, password: &str) -> Result<ssh2::Session, String> {
+pub(crate) fn create_session(ip: &str, password: &str) -> Result<ssh2::Session, String> {
     let mut last_error = String::new();
 
     for strategy in 0..3 {
@@ -592,6 +600,33 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<FileInfo>, String> {
 }
 
 #[tauri::command]
+async fn pick_local_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let folder = app.dialog().file().blocking_pick_folder();
+    match folder {
+        Some(path) => Ok(Some(path.to_string())),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn save_profile_to_file(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app.dialog().file()
+        .set_file_name("deck-transfer-profile.json")
+        .add_filter("JSON", &["json"])
+        .blocking_save_file();
+    match path {
+        Some(p) => {
+            std::fs::write(p.to_string(), &json)
+                .map_err(|e| format!("Failed to write file: {}", e))?;
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
 async fn list_remote_dir(
     deck_ip: String,
     deck_password: String,
@@ -655,6 +690,79 @@ async fn create_remote_dir(
             .map_err(|e| format!("mkdir failed: {}", e))?;
         channel.wait_close().ok();
         dbg_log("INFO", &format!("[SFTP] Created remote dir: {}", remote_path));
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[tauri::command]
+async fn create_remote_file(
+    deck_ip: String,
+    deck_password: String,
+    remote_path: String,
+) -> Result<(), String> {
+    dbg_log("INFO", &format!("[REMOTE] Creating file: {} on {}", remote_path, deck_ip));
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        channel
+            .exec(&format!("touch '{}'", remote_path))
+            .map_err(|e| format!("touch failed: {}", e))?;
+        channel.wait_close().ok();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[tauri::command]
+async fn rename_remote(
+    deck_ip: String,
+    deck_password: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    dbg_log("INFO", &format!("[REMOTE] Renaming: {} -> {}", old_path, new_path));
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        channel
+            .exec(&format!("mv '{}' '{}'", old_path, new_path))
+            .map_err(|e| format!("rename failed: {}", e))?;
+        channel.wait_close().ok();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[tauri::command]
+async fn delete_remote(
+    deck_ip: String,
+    deck_password: String,
+    remote_path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    dbg_log("INFO", &format!("[REMOTE] Deleting: {} (is_dir={})", remote_path, is_dir));
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        let cmd = if is_dir {
+            format!("rm -rf '{}'", remote_path)
+        } else {
+            format!("rm -f '{}'", remote_path)
+        };
+        channel
+            .exec(&cmd)
+            .map_err(|e| format!("delete failed: {}", e))?;
+        channel.wait_close().ok();
         Ok(())
     })
     .await
@@ -908,12 +1016,299 @@ async fn transfer_file(
     .map_err(|e| format!("Task error: {}", e))?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchFileEntry {
+    file_id: String,
+    file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchFileResult {
+    file_id: String,
+    success: bool,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn transfer_batch_sftp(
+    app: tauri::AppHandle,
+    files: Vec<BatchFileEntry>,
+    deck_ip: String,
+    deck_password: String,
+    remote_dir: String,
+    speed_limit: Option<u64>,
+) -> Result<Vec<BatchFileResult>, String> {
+    if files.is_empty() {
+        return Ok(vec![]);
+    }
+
+    if let Some(limit) = speed_limit {
+        SPEED_LIMIT.store(limit as usize, Ordering::Relaxed);
+    }
+
+    let app_handle = app.clone();
+    let remote_dir_clone = remote_dir.clone();
+
+    tokio::task::spawn_blocking(move || {
+        dbg_log("INFO", &format!(
+            "[SFTP-BATCH] Starting batch transfer of {} file(s) to {} via single SFTP session",
+            files.len(), deck_ip
+        ));
+
+        // One SSH session for all files
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        // Ensure remote directory exists
+        dbg_log("INFO", &format!("[SFTP-BATCH] Ensuring remote dir: {}", remote_dir_clone));
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        channel
+            .exec(&format!("mkdir -p '{}'", remote_dir_clone))
+            .map_err(|e| format!("Failed to create remote directory: {}", e))?;
+        channel.wait_close().ok();
+
+        // One SFTP subsystem for all files
+        dbg_log("INFO", "[SFTP-BATCH] Opening SFTP subsystem...");
+        let sftp = session
+            .sftp()
+            .map_err(|e| {
+                dbg_log("ERROR", &format!("[SFTP-BATCH] SFTP subsystem failed: {}", e));
+                format!("SFTP session failed: {}", e)
+            })?;
+        dbg_log("INFO", "[SFTP-BATCH] SFTP subsystem ready");
+
+        let mut results: Vec<BatchFileResult> = Vec::new();
+
+        for entry in &files {
+            let path = Path::new(&entry.file_path);
+            if !path.exists() {
+                results.push(BatchFileResult {
+                    file_id: entry.file_id.clone(),
+                    success: false,
+                    error: Some(format!("File not found: {}", entry.file_path)),
+                });
+                continue;
+            }
+
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".to_string());
+
+            let metadata = match std::fs::metadata(&entry.file_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    results.push(BatchFileResult {
+                        file_id: entry.file_id.clone(),
+                        success: false,
+                        error: Some(format!("Cannot read file: {}", e)),
+                    });
+                    continue;
+                }
+            };
+
+            let total_bytes = metadata.len();
+            let remote_path = format!("{}/{}", remote_dir_clone.trim_end_matches('/'), file_name);
+
+            dbg_log("INFO", &format!(
+                "[SFTP-BATCH] Transferring: {} ({} bytes) -> {}",
+                file_name, total_bytes, remote_path
+            ));
+
+            // Emit initial progress
+            let _ = app_handle.emit("transfer-progress", TransferProgress {
+                file_id: entry.file_id.clone(),
+                bytes_sent: 0,
+                total_bytes,
+                speed_bps: 0,
+                eta_seconds: 0,
+            });
+
+            // Open remote file via SFTP
+            let remote_file = sftp.create(Path::new(&remote_path));
+            let mut remote_file = match remote_file {
+                Ok(f) => f,
+                Err(e) => {
+                    dbg_log("ERROR", &format!("[SFTP-BATCH] Failed to create remote file {}: {}", remote_path, e));
+                    results.push(BatchFileResult {
+                        file_id: entry.file_id.clone(),
+                        success: false,
+                        error: Some(format!("Failed to create remote file: {}", e)),
+                    });
+                    continue;
+                }
+            };
+
+            let mut local_file = match std::fs::File::open(&entry.file_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    results.push(BatchFileResult {
+                        file_id: entry.file_id.clone(),
+                        success: false,
+                        error: Some(format!("Cannot open file: {}", e)),
+                    });
+                    continue;
+                }
+            };
+
+            let current_limit = SPEED_LIMIT.load(Ordering::Relaxed);
+            let chunk_size = if current_limit > 0 {
+                (current_limit / 4).clamp(64 * 1024, 1024 * 1024)
+            } else {
+                1024 * 1024
+            };
+
+            let mut buf = vec![0u8; chunk_size];
+            let mut bytes_sent: u64 = 0;
+            let start = Instant::now();
+            let state = get_transfer_state(&entry.file_id);
+            state.store(0, Ordering::Relaxed);
+
+            let mut cancelled = false;
+            let mut write_error: Option<String> = None;
+
+            loop {
+                // Check for cancel/pause
+                loop {
+                    let s = state.load(Ordering::Relaxed);
+                    if s == 2 {
+                        dbg_log("INFO", &format!("[SFTP-BATCH] Cancelled by user: {}", file_name));
+                        cancelled = true;
+                        break;
+                    }
+                    if s == 1 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    break;
+                }
+                if cancelled { break; }
+
+                let n = match local_file.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        write_error = Some(format!("Read error: {}", e));
+                        break;
+                    }
+                };
+                if n == 0 { break; }
+
+                if let Err(e) = remote_file.write_all(&buf[..n]) {
+                    dbg_log("ERROR", &format!("[SFTP-BATCH] Write failed for {}: {}", file_name, e));
+                    write_error = Some(format!("Write error: {}", e));
+                    break;
+                }
+
+                bytes_sent += n as u64;
+
+                // Throttle
+                let live_limit = SPEED_LIMIT.load(Ordering::Relaxed) as u64;
+                if live_limit > 0 {
+                    let target_elapsed = bytes_sent as f64 / live_limit as f64;
+                    let actual = start.elapsed().as_secs_f64();
+                    let sleep_secs = target_elapsed - actual;
+                    if sleep_secs > 0.001 {
+                        std::thread::sleep(Duration::from_secs_f64(sleep_secs));
+                    }
+                }
+
+                let actual_elapsed = start.elapsed().as_secs_f64();
+                let actual_speed = if actual_elapsed > 0.0 {
+                    (bytes_sent as f64 / actual_elapsed) as u64
+                } else { 0 };
+                let remaining = total_bytes.saturating_sub(bytes_sent);
+                let eta_seconds = if actual_speed > 0 { remaining / actual_speed } else { 0 };
+
+                let _ = app_handle.emit("transfer-progress", TransferProgress {
+                    file_id: entry.file_id.clone(),
+                    bytes_sent,
+                    total_bytes,
+                    speed_bps: actual_speed,
+                    eta_seconds,
+                });
+            }
+
+            clear_transfer_state(&entry.file_id);
+
+            if cancelled {
+                results.push(BatchFileResult {
+                    file_id: entry.file_id.clone(),
+                    success: false,
+                    error: Some("Transfer cancelled".to_string()),
+                });
+                continue;
+            }
+
+            if let Some(err) = write_error {
+                results.push(BatchFileResult {
+                    file_id: entry.file_id.clone(),
+                    success: false,
+                    error: Some(err),
+                });
+                continue;
+            }
+
+            // Flush and close the remote file
+            if let Err(e) = remote_file.flush() {
+                dbg_log("ERROR", &format!("[SFTP-BATCH] Flush failed for {}: {}", file_name, e));
+            }
+            drop(remote_file);
+
+            let elapsed = start.elapsed().as_secs_f64();
+            let avg_speed = if elapsed > 0.0 { bytes_sent as f64 / elapsed } else { 0.0 };
+            dbg_log("INFO", &format!(
+                "[SFTP-BATCH] Complete: {} ({} bytes in {:.1}s, avg {}/s)",
+                file_name, bytes_sent, elapsed,
+                if avg_speed > 1024.0 * 1024.0 {
+                    format!("{:.1} MB", avg_speed / (1024.0 * 1024.0))
+                } else if avg_speed > 1024.0 {
+                    format!("{:.0} KB", avg_speed / 1024.0)
+                } else {
+                    format!("{:.0} B", avg_speed)
+                }
+            ));
+
+            results.push(BatchFileResult {
+                file_id: entry.file_id.clone(),
+                success: true,
+                error: None,
+            });
+
+            // Emit final 100% progress
+            let _ = app_handle.emit("transfer-progress", TransferProgress {
+                file_id: entry.file_id.clone(),
+                bytes_sent: total_bytes,
+                total_bytes,
+                speed_bps: 0,
+                eta_seconds: 0,
+            });
+        }
+
+        let success_count = results.iter().filter(|r| r.success).count();
+        dbg_log("INFO", &format!(
+            "[SFTP-BATCH] Batch complete: {}/{} succeeded",
+            success_count, results.len()
+        ));
+
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
 #[tauri::command]
 fn set_speed_limit(limit: u64) {
     SPEED_LIMIT.store(limit as usize, Ordering::Relaxed);
     dbg_log("INFO", &format!("[TRANSFER] Speed limit changed to: {}",
         if limit == 0 { "unlimited".to_string() } else { format!("{:.1} MB/s", limit as f64 / (1024.0 * 1024.0)) }
     ));
+}
+
+#[tauri::command]
+fn set_minimize_to_tray(enabled: bool) {
+    MINIMIZE_TO_TRAY.store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
+    dbg_log("INFO", &format!("[SETTINGS] Minimize to tray: {}", enabled));
 }
 
 #[tauri::command]
@@ -1017,6 +1412,22 @@ async fn disable_direct_ethernet() -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| format!("Failed to open URL: {}", e))
+}
+
+#[tauri::command]
+async fn send_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("Notification error: {}", e))
+}
+
+#[tauri::command]
 async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
     // Focus existing window if already open
     if let Some(window) = app.get_webview_window("debug") {
@@ -1040,32 +1451,119 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+
+            // System tray
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            use tauri::tray::TrayIconBuilder;
+
+            let show = MenuItemBuilder::with_id("show", "Show Deck Transfer").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let menu = MenuBuilder::new(app).item(&show).separator().item(&quit).build()?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .tooltip("Deck Transfer")
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                window.show().ok();
+                                window.set_focus().ok();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            window.show().ok();
+                            window.set_focus().ok();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Start scheduler on launch
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                scheduler::run_scheduler(handle).await;
+            });
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && MINIMIZE_TO_TRAY.load(Ordering::Relaxed) == 1 {
+                    window.hide().ok();
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             scan_for_deck,
             pick_files,
+            pick_local_folder,
+            save_profile_to_file,
+            open_url,
             list_remote_dir,
             create_remote_dir,
             check_remote_files,
             transfer_file,
+            transfer_batch_sftp,
             get_debug_logs,
             clear_debug_logs,
             frontend_log,
             set_speed_limit,
+            set_minimize_to_tray,
             pause_transfer,
             resume_transfer,
             cancel_transfer,
             get_direct_ethernet_status,
             enable_direct_ethernet,
             disable_direct_ethernet,
-            open_debug_window
+            open_debug_window,
+            create_remote_file,
+            rename_remote,
+            delete_remote,
+            store::save_connection,
+            store::get_connections,
+            store::delete_connection,
+            store::save_bookmark,
+            store::get_bookmarks,
+            store::delete_bookmark,
+            store::save_settings,
+            store::load_settings,
+            store::get_transfer_stats,
+            store::update_transfer_stats,
+            store::export_profile,
+            store::import_profile,
+            store::save_pro_status,
+            store::load_pro_status,
+            history::record_transfer,
+            history::record_transfers_batch,
+            history::get_transfer_history,
+            history::get_history_count,
+            history::clear_transfer_history,
+            sync::compare_folders,
+            sync::execute_sync,
+            scheduler::create_schedule,
+            scheduler::get_schedules,
+            scheduler::delete_schedule,
+            send_notification
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

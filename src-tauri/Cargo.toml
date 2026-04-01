@@ -1,6 +1,6 @@
 [package]
 name = "deck-transfer"
-version = "0.1.0"
+version = "0.3.0"
 description = "Transfer files from PC to Steam Deck over ethernet"
 authors = ["you"]
 license = "MIT"
@@ -19,12 +19,16 @@ tauri-build = { version = "2.5.6", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.10.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
+uuid = { version = "1", features = ["v4"] }
 ssh2 = "0.9"
 network-interface = "2"
 tokio = { version = "1", features = ["full"] }
 once_cell = "1"
+open = "5"
 chrono = "0.4"

@@ -29,3 +29,8 @@ desktop.ini
 *.msix
 msix-dist/
 build-msix.bat
+msix-package/deck-transfer.exe
+msix-package/resources.pri
+
+# MSIX cert test output
+deck transfer.xml
