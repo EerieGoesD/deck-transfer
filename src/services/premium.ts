@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export const PRO_INCLUDED = import.meta.env.VITE_PRO_INCLUDED === "true";
+
 const CHECK_PRO_URL = "https://jhuxxolbcrjerztwqyap.supabase.co/functions/v1/deck-transfer-check-pro";
 
 interface ProStatus {
@@ -55,11 +57,15 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
 
 // Get cached Pro status (for app startup)
 export async function getCachedProStatus(): Promise<ProStatus | null> {
+  if (PRO_INCLUDED) {
+    return { valid: true, licenseKey: "BUNDLED", email: null, activatedAt: null };
+  }
   return loadCached();
 }
 
 // Re-validate cached key against server (doesn't increment activations)
 export async function revalidateCachedKey(): Promise<boolean> {
+  if (PRO_INCLUDED) return true;
   const cached = await loadCached();
   if (!cached?.valid || !cached?.licenseKey) return false;
   try {
@@ -81,6 +87,7 @@ export async function revalidateCachedKey(): Promise<boolean> {
 
 // Clear Pro status (deactivate)
 export async function clearProStatus(): Promise<void> {
+  if (PRO_INCLUDED) return;
   await saveCached({ valid: false, licenseKey: null, email: null, activatedAt: null });
 }
 

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:msstore": "tsc && vite build --mode msstore",
     "tauri": "tauri"
   },
   "author": "",

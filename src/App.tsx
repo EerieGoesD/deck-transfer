@@ -5,7 +5,7 @@ import type { Tab, SavedConnection, Bookmark, TransferStats } from "./types";
 import SyncTab from "./components/SyncTab";
 import HistoryTab from "./components/HistoryTab";
 import UpgradeModal from "./components/UpgradeModal";
-import { getCachedProStatus, clearProStatus, revalidateCachedKey } from "./services/premium";
+import { getCachedProStatus, clearProStatus, revalidateCachedKey, PRO_INCLUDED } from "./services/premium";
 
 interface FileEntry {
   id: string;
@@ -136,7 +136,7 @@ function App() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [transferStats, setTransferStats] = useState<TransferStats>({ total_bytes: 0, total_files: 0, total_sessions: 0, avg_speed_bps: 0 });
 
-  const [isPro, setIsPro] = useState(false);
+  const [isPro, setIsPro] = useState(PRO_INCLUDED);
   const [proEmail, setProEmail] = useState<string | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
@@ -166,20 +166,22 @@ function App() {
     invoke<TransferStats>("get_transfer_stats")
       .then(setTransferStats)
       .catch(() => {});
-    // Check cached Pro status and re-validate
-    getCachedProStatus().then((cached) => {
-      if (cached && cached.valid && cached.licenseKey) {
-        setIsPro(true);
-        setProEmail(cached.email);
-        // Re-validate in background (checks if subscription was cancelled)
-        revalidateCachedKey().then((stillValid) => {
-          if (!stillValid) {
-            setIsPro(false);
-            setProEmail(null);
-          }
-        });
-      }
-    });
+    // Check cached Pro status and re-validate (skipped on bundled-Pro builds)
+    if (!PRO_INCLUDED) {
+      getCachedProStatus().then((cached) => {
+        if (cached && cached.valid && cached.licenseKey) {
+          setIsPro(true);
+          setProEmail(cached.email);
+          // Re-validate in background (checks if subscription was cancelled)
+          revalidateCachedKey().then((stillValid) => {
+            if (!stillValid) {
+              setIsPro(false);
+              setProEmail(null);
+            }
+          });
+        }
+      });
+    }
   }, []);
 
   const uiLog = useCallback((msg: string) => {
@@ -1131,7 +1133,14 @@ function App() {
           </div>
           <div className="settings-group">
             <label className="settings-label">Deck Transfer Pro</label>
-            {isPro ? (
+            {PRO_INCLUDED ? (
+              <div className="pro-status-section">
+                <div className="pro-status-active">
+                  <span className="pro-badge">PRO</span>
+                  <span className="pro-status-text">Active (Microsoft Store)</span>
+                </div>
+              </div>
+            ) : isPro ? (
               <div className="pro-status-section">
                 <div className="pro-status-active">
                   <span className="pro-badge">PRO</span>
@@ -1837,7 +1846,7 @@ function App() {
       )}
 
       {/* Upgrade modal */}
-      {showUpgradeModal && (
+      {!PRO_INCLUDED && showUpgradeModal && (
         <UpgradeModal
           onClose={() => setShowUpgradeModal(false)}
           onActivated={(email) => {
