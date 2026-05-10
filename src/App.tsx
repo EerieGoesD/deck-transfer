@@ -125,7 +125,7 @@ function App() {
     connectionMode: "ethernet",
     directEthernet: null,
     transferProtocol: "sftp",
-    minimizeToTray: true,
+    minimizeToTray: false,
   });
   const [showSettings, setShowSettings] = useState(false);
   const [ethernetToggling, setEthernetToggling] = useState(false);
@@ -145,7 +145,7 @@ function App() {
     invoke<boolean>("get_direct_ethernet_status").then((enabled) => {
       setSettings((s) => ({ ...s, directEthernet: enabled }));
     });
-    invoke<{ speed_limit: number; auto_clear: boolean; connection_mode: string; transfer_protocol: string; minimize_to_tray?: boolean }>("load_settings")
+    invoke<{ speed_limit: number; auto_clear: boolean; connection_mode: string; transfer_protocol: string }>("load_settings")
       .then((s) => {
         setSettings((prev) => ({
           ...prev,
@@ -153,7 +153,6 @@ function App() {
           autoClear: s.auto_clear,
           connectionMode: s.connection_mode as "ethernet" | "wifi",
           transferProtocol: s.transfer_protocol as "sftp" | "scp",
-          minimizeToTray: s.minimize_to_tray !== false,
         }));
       })
       .catch(() => {});
@@ -1059,17 +1058,6 @@ function App() {
               />
               <span>Auto-clear files after successful transfer</span>
             </label>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.minimizeToTray}
-                onChange={(e) => {
-                  updateSettings((s) => ({ ...s, minimizeToTray: e.target.checked }));
-                  invoke("set_minimize_to_tray", { enabled: e.target.checked }).catch(() => {});
-                }}
-              />
-              <span>Minimize to tray when closing</span>
-            </label>
           </div>
           <div className="settings-group">
             <label className="settings-label">Transfer stats</label>
@@ -1779,7 +1767,7 @@ function App() {
         </span>
         <span className="footer-sep">|</span>
         <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer" className="footer-coffee">
-          Buy Me a Coffee
+          Support This Project
         </a>
         <span className="footer-sep">|</span>
         <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>

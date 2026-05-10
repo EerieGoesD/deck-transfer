@@ -66,7 +66,7 @@ static TRANSFER_STATE: once_cell::sync::Lazy<StdMutex<HashMap<String, Arc<Atomic
 pub(crate) static SPEED_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 // Minimize to tray toggle (1 = enabled, 0 = disabled)
-static MINIMIZE_TO_TRAY: AtomicU8 = AtomicU8::new(1);
+static MINIMIZE_TO_TRAY: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn get_transfer_state(file_id: &str) -> Arc<AtomicU8> {
     let mut map = TRANSFER_STATE.lock().unwrap();
@@ -1504,14 +1504,6 @@ pub fn run() {
             });
 
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && MINIMIZE_TO_TRAY.load(Ordering::Relaxed) == 1 {
-                    window.hide().ok();
-                    api.prevent_close();
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             scan_for_deck,
