@@ -34,5 +34,5 @@ Get the latest release from the [Releases page](https://github.com/EerieGoesD/de
 
 - Made by [EERIE](https://eeriegoesd.com)
 - [Buy Me a Coffee](https://buymeacoffee.com/eeriegoesd)
-- [Report Issue](https://github.com/EerieGoesD/deck-transfer/issues)
+- [Report Issue](https://github.com/EerieGoesD/deck-transfer/issues/new?template=bug-report.md)
 - [Feedback](https://github.com/EerieGoesD/deck-transfer/discussions)

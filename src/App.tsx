@@ -1119,16 +1119,10 @@ function App() {
               </button>
             </div>
           </div>
+          {!PRO_INCLUDED && (
           <div className="settings-group">
             <label className="settings-label">Deck Transfer Pro</label>
-            {PRO_INCLUDED ? (
-              <div className="pro-status-section">
-                <div className="pro-status-active">
-                  <span className="pro-badge">PRO</span>
-                  <span className="pro-status-text">Active (Microsoft Store)</span>
-                </div>
-              </div>
-            ) : isPro ? (
+            {isPro ? (
               <div className="pro-status-section">
                 <div className="pro-status-active">
                   <span className="pro-badge">PRO</span>
@@ -1168,6 +1162,7 @@ function App() {
               </button>
             )}
           </div>
+          )}
           <div className="settings-group">
             <button className="btn-debug" onClick={openDebugWindow}>
               Open Debug Logs
@@ -1183,7 +1178,7 @@ function App() {
         <div className="tab-bar">
           <button className={`tab-btn ${activeTab === "transfer" ? "tab-active" : ""}`} onClick={() => setActiveTab("transfer")}>Transfer</button>
           <button className={`tab-btn ${activeTab === "sync" ? "tab-active" : ""}`} onClick={() => setActiveTab("sync")}>Sync</button>
-          <button className={`tab-btn ${activeTab === "history" ? "tab-active" : ""}`} onClick={() => setActiveTab("history")}>History <span className="pro-badge-sm">PRO</span></button>
+          <button className={`tab-btn ${activeTab === "history" ? "tab-active" : ""}`} onClick={() => setActiveTab("history")}>History {!PRO_INCLUDED && <span className="pro-badge-sm">PRO</span>}</button>
           <div className="tab-spacer" />
         </div>
 
@@ -1772,7 +1767,7 @@ function App() {
         <span className="footer-sep">|</span>
         <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>
         <span className="footer-sep">|</span>
-        <a href="https://github.com/EerieGoesD/deck-transfer/issues" target="_blank" rel="noreferrer">Report Issue</a>
+        <a href="https://github.com/EerieGoesD/deck-transfer/issues/new?template=bug-report.md" target="_blank" rel="noreferrer">Report Issue</a>
         {!isPro && (
           <>
             <span className="footer-sep">|</span>
