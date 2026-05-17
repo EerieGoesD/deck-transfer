@@ -4,6 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import type { Tab, SavedConnection, Bookmark, TransferStats } from "./types";
 import SyncTab from "./components/SyncTab";
 import HistoryTab from "./components/HistoryTab";
+import RebalanceTab from "./components/RebalanceTab";
+import MisplacedTab from "./components/MisplacedTab";
+import CleanupTab from "./components/CleanupTab";
+import RomFinderTab from "./components/RomFinderTab";
 import UpgradeModal from "./components/UpgradeModal";
 import { getCachedProStatus, clearProStatus, revalidateCachedKey, PRO_INCLUDED } from "./services/premium";
 
@@ -28,6 +32,14 @@ interface DeckInfo {
 interface RemoteDirEntry {
   name: string;
   is_dir: boolean;
+}
+
+interface RemoteDiskInfo {
+  kind: string;
+  mount: string;
+  label: string;
+  total: number;
+  used: number;
 }
 
 interface Conflict {
@@ -98,6 +110,14 @@ function App() {
   const [dirEntries, setDirEntries] = useState<RemoteDirEntry[]>([]);
   const [dirLoading, setDirLoading] = useState(false);
   const [dirError, setDirError] = useState<string | null>(null);
+
+  const [diskInfo, setDiskInfo] = useState<RemoteDiskInfo[]>([]);
+  const [diskLoading, setDiskLoading] = useState(false);
+
+  const [dirSearch, setDirSearch] = useState("");
+  const dirSearchRef = useRef<HTMLInputElement>(null);
+
+  const [forwardStack, setForwardStack] = useState<string[]>([]);
 
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -297,6 +317,34 @@ function App() {
     if (deck) loadDir("/home/deck");
   }, [deck]);
 
+  useEffect(() => {
+    setDirSearch("");
+  }, [currentDir]);
+
+  const loadDiskInfo = useCallback(async () => {
+    if (!deck) return;
+    setDiskLoading(true);
+    try {
+      const disks = await invoke<RemoteDiskInfo[]>("get_remote_disk_usage", {
+        deckIp: deck.ip,
+        deckPassword: password,
+      });
+      setDiskInfo(disks);
+    } catch (e) {
+      uiLog(`get_remote_disk_usage failed: ${e}`);
+    } finally {
+      setDiskLoading(false);
+    }
+  }, [deck, password, uiLog]);
+
+  useEffect(() => {
+    if (deck) {
+      loadDiskInfo();
+    } else {
+      setDiskInfo([]);
+    }
+  }, [deck, loadDiskInfo]);
+
   // Auto-scroll breadcrumbs to show the deepest folder
   useEffect(() => {
     if (breadcrumbsRef.current) {
@@ -308,6 +356,7 @@ function App() {
     (folderName: string) => {
       const newPath =
         currentDir === "/" ? `/${folderName}` : `${currentDir}/${folderName}`;
+      setForwardStack([]);
       loadDir(newPath);
     },
     [currentDir, loadDir]
@@ -315,6 +364,7 @@ function App() {
 
   const navigateUp = useCallback(() => {
     const parent = currentDir.split("/").slice(0, -1).join("/") || "/";
+    setForwardStack((prev) => [...prev, currentDir]);
     loadDir(parent);
   }, [currentDir, loadDir]);
 
@@ -322,10 +372,61 @@ function App() {
     (index: number) => {
       const parts = currentDir.split("/").filter(Boolean);
       const path = "/" + parts.slice(0, index + 1).join("/");
+      setForwardStack([]);
       loadDir(path);
     },
     [currentDir, loadDir]
   );
+
+  const navigateForward = useCallback(() => {
+    setForwardStack((prev) => {
+      if (prev.length === 0) return prev;
+      const target = prev[prev.length - 1];
+      loadDir(target);
+      return prev.slice(0, -1);
+    });
+  }, [loadDir]);
+
+  // Backspace -> navigate up one folder (when nothing is being typed and no modal is open)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace") return;
+      if (!deck) return;
+      if (activeTab !== "transfer") return;
+      if (showSettings || showConflictDialog || showUpgradeModal) return;
+      if (promptType || renameTarget || contextMenu) return;
+      if (currentDir === "/") return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable) return;
+      }
+      e.preventDefault();
+      navigateUp();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, promptType, renameTarget, contextMenu, currentDir, navigateUp]);
+
+  // Mouse back (button 3) -> navigate up. Mouse forward (button 4) -> history forward.
+  useEffect(() => {
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      if (!deck) return;
+      if (activeTab !== "transfer") return;
+      if (showSettings || showConflictDialog || showUpgradeModal) return;
+      if (promptType || renameTarget || contextMenu) return;
+      if (e.button === 3) {
+        if (currentDir === "/") return;
+        navigateUp();
+      } else {
+        navigateForward();
+      }
+    };
+    window.addEventListener("mouseup", onMouseUp);
+    return () => window.removeEventListener("mouseup", onMouseUp);
+  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, promptType, renameTarget, contextMenu, currentDir, navigateUp, navigateForward]);
 
   // Close context menu on any click
   useEffect(() => {
@@ -878,14 +979,64 @@ function App() {
 
   const pendingFiles = files.filter((f) => f.status !== "complete");
   const breadcrumbs = currentDir.split("/").filter(Boolean);
-  const folders = dirEntries.filter((e) => e.is_dir);
-  const remoteFiles = dirEntries.filter((e) => !e.is_dir);
+  const dirSearchLower = dirSearch.trim().toLowerCase();
+  const visibleEntries = dirSearchLower
+    ? dirEntries.filter((e) => e.name.toLowerCase().includes(dirSearchLower))
+    : dirEntries;
+  const folders = visibleEntries.filter((e) => e.is_dir);
+  const remoteFiles = visibleEntries.filter((e) => !e.is_dir);
 
   return (
     <div className="app">
       <div className="header">
-        <h1>Deck Transfer</h1>
+        <div className="header-left">
+          <h1>Deck Transfer</h1>
+          {deck && (
+            <span className="header-ip" title="Steam Deck IP address">
+              <span className="header-ip-label">Deck IP</span>
+              <span className="header-ip-value">{deck.ip}</span>
+            </span>
+          )}
+        </div>
         <div className="header-right">
+          {deck && (
+            <div className="header-disk-bars">
+              <div className="header-disk-rows">
+                {diskInfo.length === 0 ? (
+                  <div className="header-disk-empty">
+                    {diskLoading ? "Reading storage..." : "No storage info"}
+                  </div>
+                ) : (
+                  diskInfo.map((d) => {
+                    const total = Number(d.total) || 0;
+                    const used = Number(d.used) || 0;
+                    const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+                    const shortLabel = d.kind === "internal" ? "Internal" : "SD";
+                    const fillClass = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "";
+                    return (
+                      <div className="header-disk-row" key={d.mount}>
+                        <span className="header-disk-name">{shortLabel}</span>
+                        <div className="header-disk-track">
+                          <div className={`header-disk-fill ${fillClass}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="header-disk-meta">
+                          {formatSize(used)} / {formatSize(total)} ({pct.toFixed(1)}%)
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <button
+                className={`header-disk-refresh ${diskLoading ? "spinning" : ""}`}
+                onClick={loadDiskInfo}
+                disabled={diskLoading}
+                title="Refresh storage info"
+              >
+                &#8635;
+              </button>
+            </div>
+          )}
           {deck && (
             <div className="speed-limit-control">
               <label htmlFor="speed-limit">Speed:</label>
@@ -967,6 +1118,7 @@ function App() {
                   setFiles([]);
                   setDirEntries([]);
                   setScanError(null);
+                  setForwardStack([]);
                 }}
               >
                 Disconnect
@@ -1179,6 +1331,10 @@ function App() {
           <button className={`tab-btn ${activeTab === "transfer" ? "tab-active" : ""}`} onClick={() => setActiveTab("transfer")}>Transfer</button>
           <button className={`tab-btn ${activeTab === "sync" ? "tab-active" : ""}`} onClick={() => setActiveTab("sync")}>Sync</button>
           <button className={`tab-btn ${activeTab === "history" ? "tab-active" : ""}`} onClick={() => setActiveTab("history")}>History {!PRO_INCLUDED && <span className="pro-badge-sm">PRO</span>}</button>
+          <button className={`tab-btn ${activeTab === "rebalance" ? "tab-active" : ""}`} onClick={() => setActiveTab("rebalance")}>Rebalance ROMs</button>
+          <button className={`tab-btn ${activeTab === "fix-rom-paths" ? "tab-active" : ""}`} onClick={() => setActiveTab("fix-rom-paths")}>Fix ROM paths</button>
+          <button className={`tab-btn ${activeTab === "cleanup" ? "tab-active" : ""}`} onClick={() => setActiveTab("cleanup")}>Cleanup ROMs</button>
+          <button className={`tab-btn ${activeTab === "rom-finder" ? "tab-active" : ""}`} onClick={() => setActiveTab("rom-finder")}>ROM Finder</button>
           <div className="tab-spacer" />
         </div>
 
@@ -1199,7 +1355,7 @@ function App() {
                 <button
                   key={b.id}
                   className="bookmark-btn"
-                  onClick={() => loadDir(b.path)}
+                  onClick={() => { setForwardStack([]); loadDir(b.path); }}
                   title={b.path}
                 >
                   {b.label}
@@ -1220,9 +1376,17 @@ function App() {
                 className="breadcrumb-up"
                 onClick={navigateUp}
                 disabled={currentDir === "/" || dirLoading}
-                title="Go up"
+                title="Go up (Backspace / Mouse Back)"
               >
                 &larr;
+              </button>
+              <button
+                className="breadcrumb-up"
+                onClick={navigateForward}
+                disabled={forwardStack.length === 0 || dirLoading}
+                title="Forward (Mouse Forward)"
+              >
+                &rarr;
               </button>
               <button
                 className="breadcrumb-refresh"
@@ -1248,6 +1412,27 @@ function App() {
                   </span>
                 ))}
               </div>
+            </div>
+
+            <div className="dir-search">
+              <input
+                ref={dirSearchRef}
+                type="text"
+                className="dir-search-input"
+                placeholder="Search in this folder..."
+                value={dirSearch}
+                onChange={(e) => setDirSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setDirSearch(""); }}
+              />
+              {dirSearch && (
+                <button
+                  className="dir-search-clear"
+                  onClick={() => { setDirSearch(""); dirSearchRef.current?.focus(); }}
+                  title="Clear"
+                >
+                  x
+                </button>
+              )}
             </div>
 
             <div
@@ -1322,7 +1507,7 @@ function App() {
                     )
                   )}
                   {folders.length === 0 && remoteFiles.length === 0 && (
-                    <div className="dir-empty">Empty folder</div>
+                    <div className="dir-empty">{dirSearch ? `No matches for "${dirSearch}"` : "Empty folder"}</div>
                   )}
                 </>
               )}
@@ -1560,6 +1745,18 @@ function App() {
             } : undefined}
           />
         </div>
+        <div style={{ display: activeTab === "rebalance" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+          <RebalanceTab deckIp={deck.ip} password={password} />
+        </div>
+        <div style={{ display: activeTab === "fix-rom-paths" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+          <MisplacedTab deckIp={deck.ip} password={password} />
+        </div>
+        <div style={{ display: activeTab === "cleanup" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+          <CleanupTab deckIp={deck.ip} password={password} />
+        </div>
+        <div style={{ display: activeTab === "rom-finder" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+          <RomFinderTab deckIp={deck.ip} password={password} />
+        </div>
         </>
       ) : (
         <div className="setup-guide">
@@ -1768,6 +1965,8 @@ function App() {
         <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>
         <span className="footer-sep">|</span>
         <a href="https://github.com/EerieGoesD/deck-transfer/issues/new?template=bug-report.md" target="_blank" rel="noreferrer">Report Issue</a>
+        <span className="footer-sep">|</span>
+        <a href="https://github.com/EerieGoesD/deck-transfer/issues/new?template=feature-request.md" target="_blank" rel="noreferrer">Suggest Feature</a>
         {!isPro && (
           <>
             <span className="footer-sep">|</span>

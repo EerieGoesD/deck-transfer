@@ -1,12 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Deck Transfer",
-  "version": "0.3.7",
+  "version": "0.4.3",
   "identifier": "com.deck-transfer.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "vite --mode msstore",
     "beforeBuildCommand": "npm run build:msstore"
   },
   "app": {

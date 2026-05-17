@@ -61,7 +61,32 @@ export interface TransferStats {
 
 export type ConflictAction = "replace" | "skip" | "replace-all" | "skip-all" | "cancel";
 
-export type Tab = "transfer" | "sync" | "history" | "settings";
+export type Tab = "transfer" | "sync" | "history" | "rebalance" | "fix-rom-paths" | "cleanup" | "rom-finder" | "settings";
+
+export interface RomScanEntry {
+  relative_path: string;
+  internal_kind: "real" | "symlink" | "missing";
+  sd_kind: "real" | "symlink" | "missing";
+  size: number;
+  real_location: "internal" | "sd" | "none" | "both";
+  symlink_target_internal: string;
+  symlink_target_sd: string;
+}
+
+export interface RomScanResult {
+  internal_root: string;
+  sd_root: string;
+  internal_total: number;
+  internal_used: number;
+  sd_total: number;
+  sd_used: number;
+  entries: RomScanEntry[];
+}
+
+export interface RebalanceMoveResult {
+  ok: boolean;
+  message: string;
+}
 
 export const SPEED_OPTIONS = [
   { label: "Unlimited", value: 0 },

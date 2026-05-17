@@ -240,6 +240,36 @@ fn try_handshake(ip: &str, password: &str, strategy: usize) -> Result<ssh2::Sess
     Ok(session)
 }
 
+/// Long-running operations (multi-GB cross-disk file moves on the Deck) can run for
+/// many minutes during which the SSH channel sits silent. The default 30 second
+/// TCP read timeout fires before the script can finish. This builds a session with
+/// no read/write timeout and no ssh2 session timeout for these specific commands.
+pub(crate) fn create_long_op_session(ip: &str, password: &str) -> Result<ssh2::Session, String> {
+    let addr: SocketAddr = format!("{}:22", ip)
+        .parse()
+        .map_err(|e| format!("Invalid address: {}", e))?;
+
+    dbg_log("INFO", &format!("[SSH] (long-op) connecting to {}:22 ...", ip));
+    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+    let _ = tcp.set_nodelay(true);
+    // Intentionally NO read_timeout / write_timeout: cp -a of a 4 GB file across the
+    // SD card bus can silently run for several minutes, and we must not bail on the
+    // client side while the server is still working.
+    let mut session = ssh2::Session::new().map_err(|e| format!("SSH error: {}", e))?;
+    session.set_tcp_stream(tcp);
+    session.set_timeout(0); // 0 = no ssh2 blocking timeout
+    session.handshake().map_err(|e| format!("Handshake failed: {}", e))?;
+    session
+        .userauth_password("deck", password)
+        .map_err(|e| format!("Auth failed: {}", e))?;
+    if !session.authenticated() {
+        return Err("SSH authentication failed".into());
+    }
+    Ok(session)
+}
+
 pub(crate) fn create_session(ip: &str, password: &str) -> Result<ssh2::Session, String> {
     let mut last_error = String::new();
 
@@ -774,6 +804,389 @@ struct RemoteFileCheck {
     file_name: String,
     exists: bool,
     remote_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDiskInfo {
+    pub kind: String,
+    pub mount: String,
+    pub label: String,
+    pub total: u64,
+    pub used: u64,
+}
+
+#[tauri::command]
+async fn get_remote_disk_usage(
+    deck_ip: String,
+    deck_password: String,
+) -> Result<Vec<RemoteDiskInfo>, String> {
+    dbg_log("INFO", &format!("[DISK] Reading disk usage on {}", deck_ip));
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        let cmd = "df -B1 --output=target,size,used /home 2>/dev/null; \
+                   awk '$2 ~ /^\\/run\\/media\\// {print $2}' /proc/mounts 2>/dev/null | \
+                   while read m; do df -B1 --output=target,size,used \"$m\" 2>/dev/null | tail -n +2; done";
+
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        channel
+            .exec(cmd)
+            .map_err(|e| format!("df exec failed: {}", e))?;
+
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out)
+            .map_err(|e| format!("Read df output failed: {}", e))?;
+        channel.wait_close().ok();
+
+        let mut disks: Vec<RemoteDiskInfo> = Vec::new();
+        let mut seen_mounts: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for line in out.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            // Skip df header lines (start with "Mounted on")
+            if line.starts_with("Mounted") { continue; }
+
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 3 { continue; }
+
+            let target = fields[0].to_string();
+            let total: u64 = match fields[1].parse() { Ok(v) => v, Err(_) => continue };
+            let used: u64 = match fields[2].parse() { Ok(v) => v, Err(_) => continue };
+
+            if seen_mounts.contains(&target) { continue; }
+            seen_mounts.insert(target.clone());
+
+            let (kind, label) = if target.starts_with("/run/media/") {
+                let leaf = std::path::Path::new(&target)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "SD Card".to_string());
+                ("sd".to_string(), format!("SD Card ({})", leaf))
+            } else {
+                ("internal".to_string(), "Internal Storage".to_string())
+            };
+
+            disks.push(RemoteDiskInfo { kind, mount: target, label, total, used });
+        }
+
+        dbg_log("INFO", &format!("[DISK] Found {} disk(s)", disks.len()));
+        Ok(disks)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+// ─────────────────────────────────────────────
+// ROM Rebalancer
+// ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RomScanEntry {
+    pub relative_path: String,
+    pub internal_kind: String, // "real" | "symlink" | "missing"
+    pub sd_kind: String,
+    pub size: u64,
+    pub real_location: String, // "internal" | "sd" | "none" | "both"
+    pub symlink_target_internal: String,
+    pub symlink_target_sd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RomScanResult {
+    pub internal_root: String,
+    pub sd_root: String,
+    pub internal_total: u64,
+    pub internal_used: u64,
+    pub sd_total: u64,
+    pub sd_used: u64,
+    pub entries: Vec<RomScanEntry>,
+}
+
+#[tauri::command]
+async fn scan_rom_layout(
+    deck_ip: String,
+    deck_password: String,
+    internal_root: String,
+    sd_root: String,
+) -> Result<RomScanResult, String> {
+    dbg_log("INFO", &format!("[REBAL] Scanning {} and {}", internal_root, sd_root));
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        // One find for each root. %y=type, %s=size, %p=path, %l=symlink target.
+        let cmd = format!(
+            "find '{}' \\( -type f -o -type l \\) -printf '%y\\t%s\\t%p\\t%l\\n' 2>/dev/null; \
+             echo '---SEP---'; \
+             find '{}' \\( -type f -o -type l \\) -printf '%y\\t%s\\t%p\\t%l\\n' 2>/dev/null; \
+             echo '---SEP---'; \
+             df -B1 --output=size,used '{}' 2>/dev/null | tail -1; \
+             df -B1 --output=size,used '{}' 2>/dev/null | tail -1",
+            internal_root, sd_root, internal_root, sd_root
+        );
+
+        let mut channel = session.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+        channel.exec(&cmd).map_err(|e| format!("Scan exec failed: {}", e))?;
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out).map_err(|e| format!("Read failed: {}", e))?;
+        channel.wait_close().ok();
+
+        let parts: Vec<&str> = out.split("---SEP---\n").collect();
+        if parts.len() < 3 {
+            return Err(format!("Unexpected scan output (got {} sections)", parts.len()));
+        }
+
+        struct RawEntry { is_symlink: bool, size: u64, path: String, target: String }
+        fn parse(section: &str, root: &str) -> HashMap<String, RawEntry> {
+            let mut map = HashMap::new();
+            for line in section.lines() {
+                let cols: Vec<&str> = line.splitn(4, '\t').collect();
+                if cols.len() < 3 { continue; }
+                let kind = cols[0];
+                let size: u64 = cols[1].parse().unwrap_or(0);
+                let path = cols[2].to_string();
+                let target = cols.get(3).map(|s| s.to_string()).unwrap_or_default();
+                if !path.starts_with(root) { continue; }
+                let rel = path.trim_start_matches(root).trim_start_matches('/').to_string();
+                if rel.is_empty() { continue; }
+                map.insert(rel, RawEntry {
+                    is_symlink: kind == "l",
+                    size, path, target,
+                });
+            }
+            map
+        }
+
+        let internal_map = parse(parts[0], &internal_root);
+        let sd_map = parse(parts[1], &sd_root);
+
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for k in internal_map.keys() { keys.insert(k.clone()); }
+        for k in sd_map.keys() { keys.insert(k.clone()); }
+
+        let mut entries: Vec<RomScanEntry> = Vec::new();
+        for k in keys {
+            let i = internal_map.get(&k);
+            let s = sd_map.get(&k);
+            let (internal_kind, internal_target, internal_size) = match i {
+                None => ("missing".to_string(), String::new(), 0u64),
+                Some(e) if e.is_symlink => ("symlink".to_string(), e.target.clone(), e.size),
+                Some(e) => ("real".to_string(), String::new(), e.size),
+            };
+            let (sd_kind, sd_target, sd_size) = match s {
+                None => ("missing".to_string(), String::new(), 0u64),
+                Some(e) if e.is_symlink => ("symlink".to_string(), e.target.clone(), e.size),
+                Some(e) => ("real".to_string(), String::new(), e.size),
+            };
+            // Real location: where the real bytes live
+            let real_location = match (internal_kind.as_str(), sd_kind.as_str()) {
+                ("real", "real") => "both".to_string(),
+                ("real", _) => "internal".to_string(),
+                (_, "real") => "sd".to_string(),
+                _ => "none".to_string(),
+            };
+            // Best size: the real file's size; fall back to the larger of the two
+            let size = if internal_kind == "real" { internal_size }
+                else if sd_kind == "real" { sd_size }
+                else { internal_size.max(sd_size) };
+            entries.push(RomScanEntry {
+                relative_path: k,
+                internal_kind,
+                sd_kind,
+                size,
+                real_location,
+                symlink_target_internal: internal_target,
+                symlink_target_sd: sd_target,
+            });
+        }
+
+        // df output: "size used"
+        let mut df_lines: Vec<(u64, u64)> = Vec::new();
+        for line in parts[2].lines() {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() >= 2 {
+                let total: u64 = cols[0].parse().unwrap_or(0);
+                let used: u64 = cols[1].parse().unwrap_or(0);
+                df_lines.push((total, used));
+            }
+        }
+        let (internal_total, internal_used) = df_lines.first().copied().unwrap_or((0, 0));
+        let (sd_total, sd_used) = df_lines.get(1).copied().unwrap_or((0, 0));
+
+        dbg_log("INFO", &format!("[REBAL] Scanned {} entries", entries.len()));
+        Ok(RomScanResult {
+            internal_root, sd_root,
+            internal_total, internal_used,
+            sd_total, sd_used,
+            entries,
+        })
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebalanceMoveResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+// direction: "to_sd" copies from internal_path to sd_path; "to_internal" the other way.
+// After move, source location gets a symlink pointing at the destination.
+#[tauri::command]
+async fn move_rom_file(
+    deck_ip: String,
+    deck_password: String,
+    internal_path: String,
+    sd_path: String,
+    direction: String,
+) -> Result<RebalanceMoveResult, String> {
+    dbg_log("INFO", &format!("[REBAL] Move {} dir={}", internal_path, direction));
+    tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
+        // Long-op session: cp of multi-GB files across the SD card bus can run for minutes
+        // without writing to the SSH channel. The default 30s read timeout would fire.
+        let session = create_long_op_session(&deck_ip, &deck_password)?;
+
+        let (src, dst) = match direction.as_str() {
+            "to_sd" => (internal_path.clone(), sd_path.clone()),
+            "to_internal" => (sd_path.clone(), internal_path.clone()),
+            _ => return Err(format!("Invalid direction: {}", direction)),
+        };
+
+        // Shell single-quote: replace ' with '\''
+        fn q(s: &str) -> String { format!("'{}'", s.replace('\'', "'\\''")) }
+        let qsrc = q(&src);
+        let qdst = q(&dst);
+
+        // ES-DE scans the SD root only. When moving SD -> internal we must leave a symlink
+        // on the SD side so ES-DE still sees the ROM. When moving internal -> SD nothing is
+        // required on internal, so we skip the symlink to match the existing EmuDeck layout
+        // (no internal-side symlinks).
+        let symlink_step = if direction == "to_internal" {
+            format!("ln -s {dst} {src}", dst = qdst, src = qsrc)
+        } else {
+            ":".to_string()
+        };
+
+        let script = format!(
+            "set -e; \
+             if [ ! -f {src} ] || [ -L {src} ]; then echo 'ERR src-not-real'; exit 11; fi; \
+             if [ -e {dst} ] && [ ! -L {dst} ]; then echo 'ERR dst-exists-as-real'; exit 12; fi; \
+             mkdir -p \"$(dirname {dst})\"; \
+             tmp={dst}.dttmp.$$; \
+             cp -a {src} \"$tmp\"; \
+             sz1=$(stat -c '%s' {src}); \
+             sz2=$(stat -c '%s' \"$tmp\"); \
+             if [ \"$sz1\" != \"$sz2\" ]; then rm -f \"$tmp\"; echo 'ERR size-mismatch'; exit 13; fi; \
+             mv -fT \"$tmp\" {dst}; \
+             rm -f {src}; \
+             {symlink_step}; \
+             echo OK",
+            src = qsrc, dst = qdst, symlink_step = symlink_step
+        );
+
+        let mut channel = session.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+        channel.exec(&script).map_err(|e| format!("Move exec failed: {}", e))?;
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out).map_err(|e| format!("Read failed: {}", e))?;
+        channel.wait_close().ok();
+        let exit_code = channel.exit_status().unwrap_or(-1);
+
+        let ok = exit_code == 0 && out.trim_end().ends_with("OK");
+        let message = if ok { "OK".to_string() } else { format!("exit={} out={}", exit_code, out.trim()) };
+        Ok(RebalanceMoveResult { ok, message })
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+// Safe delete for the duplicate-cleanup feature. Refuses to delete unless the file exists,
+// is a regular file (not a symlink), and its current size matches the expected_size we got
+// from the most recent scan. This guards against deleting the wrong copy if something
+// changed between scan and apply.
+#[tauri::command]
+async fn safe_delete_remote_file(
+    deck_ip: String,
+    deck_password: String,
+    path: String,
+    expected_size: u64,
+) -> Result<RebalanceMoveResult, String> {
+    dbg_log("INFO", &format!("[CLEAN] rm '{}' (expected size {})", path, expected_size));
+    tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        fn q(s: &str) -> String { format!("'{}'", s.replace('\'', "'\\''")) }
+        let qpath = q(&path);
+
+        let script = format!(
+            "set -e; \
+             if [ ! -e {p} ]; then echo 'ERR not-found'; exit 11; fi; \
+             if [ -L {p} ]; then echo 'ERR is-symlink'; exit 12; fi; \
+             if [ ! -f {p} ]; then echo 'ERR not-regular'; exit 13; fi; \
+             sz=$(stat -c '%s' {p}); \
+             if [ \"$sz\" != \"{expected}\" ]; then echo \"ERR size-mismatch got=$sz expected={expected}\"; exit 14; fi; \
+             rm -f {p}; \
+             echo OK",
+            p = qpath, expected = expected_size
+        );
+
+        let mut channel = session.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+        channel.exec(&script).map_err(|e| format!("Delete exec failed: {}", e))?;
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out).map_err(|e| format!("Read failed: {}", e))?;
+        channel.wait_close().ok();
+        let exit_code = channel.exit_status().unwrap_or(-1);
+
+        let ok = exit_code == 0 && out.trim_end().ends_with("OK");
+        let message = if ok { "OK".to_string() } else { format!("exit={} out={}", exit_code, out.trim()) };
+        Ok(RebalanceMoveResult { ok, message })
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+// Same-disk rename for the "Misplaced ROMs" feature. Refuses to clobber an existing dst.
+#[tauri::command]
+async fn rename_remote_file(
+    deck_ip: String,
+    deck_password: String,
+    src_path: String,
+    dst_path: String,
+) -> Result<RebalanceMoveResult, String> {
+    dbg_log("INFO", &format!("[MISP] mv '{}' -> '{}'", src_path, dst_path));
+    tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        fn q(s: &str) -> String { format!("'{}'", s.replace('\'', "'\\''")) }
+        let qsrc = q(&src_path);
+        let qdst = q(&dst_path);
+
+        // `mv -n` refuses to overwrite. Ensure destination directory exists.
+        let script = format!(
+            "set -e; \
+             if [ ! -e {src} ] && [ ! -L {src} ]; then echo 'ERR src-missing'; exit 11; fi; \
+             if [ -e {dst} ]; then echo 'ERR dst-exists'; exit 12; fi; \
+             mkdir -p \"$(dirname {dst})\"; \
+             mv -n {src} {dst}; \
+             echo OK",
+            src = qsrc, dst = qdst
+        );
+
+        let mut channel = session.channel_session().map_err(|e| format!("Channel error: {}", e))?;
+        channel.exec(&script).map_err(|e| format!("Rename exec failed: {}", e))?;
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out).map_err(|e| format!("Read failed: {}", e))?;
+        channel.wait_close().ok();
+        let exit_code = channel.exit_status().unwrap_or(-1);
+
+        let ok = exit_code == 0 && out.trim_end().ends_with("OK");
+        let message = if ok { "OK".to_string() } else { format!("exit={} out={}", exit_code, out.trim()) };
+        Ok(RebalanceMoveResult { ok, message })
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
 }
 
 #[tauri::command]
@@ -1531,6 +1944,11 @@ pub fn run() {
             create_remote_file,
             rename_remote,
             delete_remote,
+            get_remote_disk_usage,
+            scan_rom_layout,
+            move_rom_file,
+            rename_remote_file,
+            safe_delete_remote_file,
             store::save_connection,
             store::get_connections,
             store::delete_connection,
