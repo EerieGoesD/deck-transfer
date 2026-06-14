@@ -28,7 +28,7 @@ sudo systemctl start sshd
 
 ## Download
 
-Get the latest release from the [Releases page](https://github.com/EerieGoesD/deck-transfer/releases).
+[Microsoft Store](https://apps.microsoft.com/detail/9NRZ0CVFG1H8?hl=en-us&gl=PT&ocid=pdpshare)
 
 ## Feedback
 
