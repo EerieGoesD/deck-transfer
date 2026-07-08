@@ -26,7 +26,12 @@ tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-notification = "2"
 uuid = { version = "1", features = ["v4"] }
-ssh2 = "0.9"
+# On Windows, libssh2 defaults to the WinCNG crypto backend, which does NOT
+# support ed25519 host keys or curve25519 key exchange - exactly what modern
+# Steam Decks (OpenSSH 10+) require. These features rebuild libssh2 against a
+# vendored OpenSSL (built from source), which supports both, so the handshake
+# succeeds. openssl-on-win32 flips the backend; vendored-openssl supplies OpenSSL.
+ssh2 = { version = "0.9", features = ["openssl-on-win32", "vendored-openssl"] }
 network-interface = "2"
 tokio = { version = "1", features = ["full"] }
 once_cell = "1"

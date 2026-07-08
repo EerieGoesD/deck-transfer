@@ -295,10 +295,33 @@ pub(crate) fn create_session(ip: &str, password: &str) -> Result<ssh2::Session, 
     dbg_log("ERROR", "[SSH] All 3 handshake strategies failed.");
     dbg_log("ERROR", "[SSH] This usually means a VPN or firewall is interfering with the SSH connection.");
     dbg_log("ERROR", "[SSH] Try: (1) Disconnect your VPN, (2) Use Ethernet mode instead of Wi-Fi");
-    Err(format!(
-        "{}\n\nThis is likely caused by a VPN or firewall interfering with SSH.\nTry disconnecting your VPN, or use Ethernet mode instead.",
-        last_error
-    ))
+    // Return the raw technical error only; the scan layer decides what advice
+    // to show the user (it knows whether an active VPN adapter was detected).
+    Err(last_error)
+}
+
+/// Given the network-adapter name of an active VPN, return plain-language steps
+/// (plus a real command where a reliable one exists) for fully quitting it.
+/// "Fully quitting" matters because most VPNs keep a background service running
+/// that holds the tunnel adapter and kill-switch even after you click Disconnect.
+/// Commands that stop a Windows service need an Administrator Command Prompt.
+fn vpn_quit_hint(adapter_name: &str) -> String {
+    let n = adapter_name.to_lowercase();
+    if n.contains("nordlynx") || n.contains("nord") {
+        "NordVPN: right-click NordVPN in the system tray and choose Quit, and turn off Settings > Kill Switch. If it stays active, open Command Prompt as Administrator and run: net stop nordvpn-service".to_string()
+    } else if n.contains("proton") {
+        "Proton VPN: turn off the Kill Switch in the app, then Quit it from the system tray. If it stays active, open Command Prompt as Administrator and run: taskkill /F /IM ProtonVPNService.exe".to_string()
+    } else if n.contains("mullvad") {
+        "Mullvad: click Disconnect in the app and turn off Lockdown mode. Or run in Command Prompt: mullvad disconnect  (then: mullvad lockdown-mode set off)".to_string()
+    } else if n.contains("warp") || n.contains("cloudflare") {
+        "Cloudflare WARP: click the WARP icon and switch it Off. Or run in Command Prompt: warp-cli disconnect".to_string()
+    } else if n.contains("wireguard") || n.contains("wg") {
+        "WireGuard: open the WireGuard app and click Deactivate on the active tunnel.".to_string()
+    } else if n.contains("tap") || n.contains("tun") || n.contains("openvpn") {
+        "OpenVPN: right-click the OpenVPN GUI icon in the system tray and choose Disconnect, then Exit.".to_string()
+    } else {
+        "Quit your VPN app fully from the system tray (not just Disconnect) and turn off its kill-switch, then scan again.".to_string()
+    }
 }
 
 // ---------------------
@@ -427,34 +450,41 @@ async fn scan_for_deck(
         );
     }
 
-    // Detect VPN adapters and warn
+    // Detect VPN adapters. Only treat one as "active" if it holds a real
+    // (non link-local) IPv4 address - a leftover installed adapter that only
+    // has a 169.254.x address is not actually connected, so don't warn on it.
+    let mut detected_vpns: Vec<String> = Vec::new();
     if let Ok(all_ifaces) = <network_interface::NetworkInterface as network_interface::NetworkInterfaceConfig>::show() {
-        let vpn_names: Vec<String> = all_ifaces
-            .iter()
-            .filter(|i| {
-                let n = i.name.to_lowercase();
-                n.contains("tap") || n.contains("tun")
-                    || n.contains("wg") || n.contains("wireguard")
-                    || n.contains("nordlynx") || n.contains("proton")
-                    || n.contains("mullvad") || n.contains("vpn")
-                    || n.contains("cloudflare")
-                    || n.contains("warp")
-            })
-            .map(|i| {
-                let ips: Vec<String> = i.addr.iter().filter_map(|a| {
-                    if let network_interface::Addr::V4(v4) = a {
-                        Some(v4.ip.to_string())
-                    } else { None }
-                }).collect();
-                format!("{} ({})", i.name, ips.join(", "))
-            })
-            .collect();
+        for i in &all_ifaces {
+            let n = i.name.to_lowercase();
+            let is_vpn = n.contains("tap") || n.contains("tun")
+                || n.contains("wg") || n.contains("wireguard")
+                || n.contains("nordlynx") || n.contains("proton")
+                || n.contains("mullvad") || n.contains("vpn")
+                || n.contains("cloudflare")
+                || n.contains("warp");
+            if !is_vpn {
+                continue;
+            }
+            let active_ips: Vec<String> = i.addr.iter().filter_map(|a| {
+                if let network_interface::Addr::V4(v4) = a {
+                    let o = v4.ip.octets();
+                    if o[0] == 169 && o[1] == 254 { None } else { Some(v4.ip.to_string()) }
+                } else { None }
+            }).collect();
+            if !active_ips.is_empty() {
+                detected_vpns.push(format!("{} ({})", i.name, active_ips.join(", ")));
+            }
+        }
 
-        if !vpn_names.is_empty() {
-            dbg_log("WARN", &format!("[SCAN] VPN adapters detected: {}", vpn_names.join("; ")));
-            dbg_log("WARN", "[SCAN] VPN may interfere with SSH connections over Wi-Fi");
+        if !detected_vpns.is_empty() {
+            dbg_log("WARN", &format!("[SCAN] Active VPN adapters detected: {}", detected_vpns.join("; ")));
+            dbg_log("WARN", "[SCAN] VPN may interfere with SSH connections");
+            for v in &detected_vpns {
+                dbg_log("WARN", &format!("[SCAN] To fully quit - {}", vpn_quit_hint(v)));
+            }
         } else {
-            dbg_log("INFO", "[SCAN] No VPN adapters detected");
+            dbg_log("INFO", "[SCAN] No active VPN adapters detected");
         }
 
         // Dump ALL network interfaces for debugging
@@ -597,8 +627,41 @@ async fn scan_for_deck(
     }
 
     dbg_log("ERROR", &format!("[SCAN] None of the {} SSH devices accepted our credentials", ssh_devices.len()));
+
+    // A failed encryption handshake (as opposed to a wrong password) is almost
+    // always something on the PC interfering: a VPN, its kill-switch, a firewall,
+    // or antivirus. Give targeted advice, naming the VPN if one is active.
+    let handshake_failed = last_error.contains("handshake")
+        || last_error.contains("exchange encryption keys");
+
+    if handshake_failed && !detected_vpns.is_empty() {
+        // Unique quit instructions for each detected VPN (usually just one).
+        let mut hints: Vec<String> = Vec::new();
+        for v in &detected_vpns {
+            let h = vpn_quit_hint(v);
+            if !hints.contains(&h) {
+                hints.push(h);
+            }
+        }
+        return Err(format!(
+            "VPN detected: {}\n\nA running VPN is almost certainly blocking the connection to your Deck. Just disconnecting is not enough - fully quit it so its network adapter shuts down, then scan again.\n\nHow to fully quit it:\n{}\n\nReached {} device(s) but the encryption handshake failed.\nLast error: {}",
+            detected_vpns.join("; "),
+            hints.join("\n"),
+            ssh_devices.len(),
+            last_error
+        ));
+    }
+
+    if handshake_failed {
+        return Err(format!(
+            "Reached {} device(s) but the encryption handshake failed.\n\nThis is usually a VPN, firewall, or antivirus on your PC blocking SSH. Fully quit any VPN app and turn off firewall/antivirus, or connect with a direct Ethernet cable instead, then scan again.\n\nLast error: {}",
+            ssh_devices.len(),
+            last_error
+        ));
+    }
+
     Err(format!(
-        "Found {} SSH device(s) but none is the Deck.\nLast error: {}\n\nMake sure SSH is enabled on the Deck and you're on the same network.",
+        "Found {} SSH device(s) but none is the Deck.\nLast error: {}\n\nMake sure SSH is enabled on the Deck, and that you typed the same password you set with passwd.",
         ssh_devices.len(), last_error
     ))
 }

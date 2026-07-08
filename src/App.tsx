@@ -104,6 +104,7 @@ function App() {
     current_interface: "",
   });
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanErrorCopied, setScanErrorCopied] = useState(false);
   const [password, setPassword] = useState("");
 
   const [currentDir, setCurrentDir] = useState("/home/deck");
@@ -511,6 +512,7 @@ function App() {
   const scanForDeck = useCallback(async () => {
     setScanning(true);
     setScanError(null);
+    setScanErrorCopied(false);
     setScanProgress({ scanned: 0, total: 0, current_interface: "" });
     try {
       const result = await invoke<DeckInfo>("scan_for_deck", {
@@ -537,6 +539,17 @@ function App() {
       setScanning(false);
     }
   }, [password, settings.connectionMode]);
+
+  const copyScanError = useCallback(async () => {
+    if (!scanError) return;
+    try {
+      await navigator.clipboard.writeText(scanError);
+      setScanErrorCopied(true);
+      setTimeout(() => setScanErrorCopied(false), 1500);
+    } catch {
+      setScanErrorCopied(false);
+    }
+  }, [scanError]);
 
   // Persist settings when they change
   const persistSettings = useCallback((s: Settings) => {
@@ -1851,7 +1864,16 @@ function App() {
               )}
 
               {scanError && !scanning && (
-                <div className="scan-error">{scanError}</div>
+                <div className="scan-error">
+                  <div className="scan-error-text">{scanError}</div>
+                  <button
+                    className="rebalance-copy-btn scan-error-copy-btn"
+                    onClick={copyScanError}
+                    title="Copy the error message to the clipboard"
+                  >
+                    {scanErrorCopied ? "Copied!" : "Copy error message"}
+                  </button>
+                </div>
               )}
 
               {savedConnections.length > 0 && (

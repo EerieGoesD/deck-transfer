@@ -1919,9 +1919,23 @@ body {
 }
 
 .scan-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   font-size: 0.8rem;
   color: var(--error);
   line-height: 1.4;
+}
+
+.scan-error-text {
+  white-space: pre-wrap;
+}
+
+.scan-error-copy-btn {
+  align-self: flex-start;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* ==================== */
