@@ -27,6 +27,7 @@ desktop.ini
 
 # Build artifacts
 *.msix
+*.msixbundle
 msix-dist/
 build-msix.bat
 msix-package/deck-transfer.exe

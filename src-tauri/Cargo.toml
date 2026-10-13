@@ -1,6 +1,6 @@
 [package]
 name = "deck-transfer"
-version = "0.3.7"
+version = "0.4.5"
 description = "Transfer files from PC to Steam Deck over ethernet"
 authors = ["you"]
 license = "MIT"

@@ -6,16 +6,16 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="20715EerieGoesD.DeckTransfer"
-    Version="0.4.4.0"
-    Publisher="CN=A2A89A47-0B2B-4C32-B85C-9753888A9FFC"
-    ProcessorArchitecture="x64" />
+    Name="{{IDENTITY_NAME}}"
+    Version="{{VERSION}}"
+    Publisher="{{PUBLISHER}}"
+    ProcessorArchitecture="{{ARCHITECTURE}}" />
 
   <Properties>
     <DisplayName>Deck Transfer</DisplayName>
     <PublisherDisplayName>EERIE</PublisherDisplayName>
     <Description>Plug-and-play file transfer from PC to Steam Deck over Ethernet or Wi-Fi.</Description>
-    <Logo>StoreLogo.png</Logo>
+    <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
   <Dependencies>
@@ -29,20 +29,20 @@
   <Applications>
     <Application
       Id="DeckTransfer"
-      Executable="deck-transfer.exe"
+      Executable="{{EXE_NAME}}"
       EntryPoint="Windows.FullTrustApplication">
 
       <uap:VisualElements
         DisplayName="Deck Transfer"
         Description="Transfer files from PC to Steam Deck over ethernet"
         BackgroundColor="transparent"
-        Square150x150Logo="Square150x150Logo.png"
-        Square44x44Logo="Square44x44Logo.png">
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile
-          Wide310x150Logo="Wide310x150Logo.png"
-          Square71x71Logo="SmallTile.png"
-          Square310x310Logo="LargeTile.png" />
-        <uap:SplashScreen Image="SplashScreen.png" />
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\SmallTile.png"
+          Square310x310Logo="Assets\LargeTile.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
     </Application>
   </Applications>
