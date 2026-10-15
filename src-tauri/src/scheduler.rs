@@ -151,12 +151,19 @@ pub async fn run_scheduler(app: AppHandle) {
 use chrono::Timelike;
 
 async fn run_scheduled_sync(app: AppHandle, schedule: ScheduleConfig) {
+    // Mac App Store build: an ended free trial stops scheduled syncs too.
+    if !crate::licensing::has_access(&app).await {
+        dbg_log("INFO", &format!("[SCHEDULER] {} skipped: free trial ended", schedule.name));
+        notify(&app, &schedule.name, "Your free trial has ended. Buy Deck Transfer to keep using it.");
+        return;
+    }
     if schedule.speed_limit > 0 {
         SPEED_LIMIT.store(schedule.speed_limit as usize, std::sync::atomic::Ordering::Relaxed);
     }
 
     // Compare folders
     let plan = match crate::sync::compare_folders(
+        app.clone(),
         schedule.deck_ip.clone(),
         schedule.deck_password.clone(),
         schedule.local_dir.clone(),

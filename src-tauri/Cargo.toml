@@ -37,3 +37,19 @@ tokio = { version = "1", features = ["full"] }
 once_cell = "1"
 open = "5"
 chrono = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Mac App Store free trial and one-time unlock (StoreKit 2).
+tauri-plugin-iap = "0.9"
+# Remembers the window's size and position between launches.
+tauri-plugin-window-state = "2"
+# CPU and memory readout for this app's own process.
+libc = "0.2"
+# Wi-Fi or wired: which network ports the scan uses.
+system-configuration = "0.7"
+# Finds the Deck on a direct cable through IPv6 link-local addresses.
+socket2 = "0.6"
+# Keeps access to picked files and folders across launches (App Sandbox).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSURL", "NSData", "NSString", "NSError"] }
+base64 = "0.22"

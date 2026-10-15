@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac App Store: sandbox required. No temporary exceptions of any kind. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- SSH to the Deck, StoreKit, and a sandboxed webview opens no window at all without it. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Files and folders picked with Browse or dropped on the window: read to send, write for Export Config. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Keep those grants across relaunches (scheduled syncs, re-send from history). -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>R8G3Q53T4G.com.deck-transfer.app</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>R8G3Q53T4G</string>
+</dict>
+</plist>

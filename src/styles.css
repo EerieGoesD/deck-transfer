@@ -3910,3 +3910,702 @@ a.footer-pro:hover {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* ==================== */
+/* Mac App Store build   */
+/* ==================== */
+/* Everything below applies on a Mac only (.app.mac); Windows is unchanged. */
+
+/* On a Mac the pointer is a hand only on links. */
+.app.mac :is(button, select, label, input[type="checkbox"], input[type="radio"]),
+.app.mac :is(.bookmark-remove, .cleanup-resolve-option, .dir-entry, .drop-zone, .drop-zone .browse-link,
+  .rebalance-confirm, .rebalance-strategy-option, .rfp-entry, .rom-finder-detail-path, .sync-bookmark-chip, .toggle-option) {
+  cursor: default;
+}
+
+/* The usage line under the title: lifted out of the flow so its changing length
+   never moves the header, with its height reserved below the title. */
+.app.mac .brand {
+  position: relative;
+  padding-bottom: 14px;
+}
+
+.app.mac .brand-sub {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* The Mac's system font is wider: keep header labels on one line (the window's
+   minimum width leaves room for them), and cut a long IPv6 address short. */
+.app.mac :is(.header h1, .header-ip-label, .header-ip-value, .connection-status, .header-disk-meta) {
+  white-space: nowrap;
+}
+
+.app.mac .header-ip-value {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* When the header is short of room, the storage figures give way first. */
+.app.mac .header-left,
+.app.mac .header-right > :not(.header-disk-bars) {
+  flex-shrink: 0;
+}
+
+.app.mac :is(.header-right, .header-disk-bars, .header-disk-rows, .header-disk-row) {
+  min-width: 0;
+}
+
+.app.mac .header-disk-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Keep the IP badge on the title's own line rather than centred on the
+   taller title block. */
+.app.mac .header-left {
+  align-items: flex-start;
+}
+
+.app.mac .header-left .header-ip {
+  margin-top: 2px;
+}
+
+/* The trial bar: the one place to buy while the app is open and not bought. */
+.trial-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 4px 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.trial-bar-text {
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trial-bar-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.trial-bar-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.trial-bar-btn:disabled {
+  opacity: 0.6;
+}
+
+/* The purchase screens: one page covering the window, in two columns side by
+   side so it fits a short window (app-related/apple/paywall_layout.txt). */
+.buy-page {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background:
+    radial-gradient(120% 55% at 50% 0%, rgba(26, 159, 255, 0.12), transparent 70%),
+    var(--bg-primary);
+  animation: buy-page-in 0.2s ease;
+}
+
+@keyframes buy-page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.buy-page-close {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.buy-page-close:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.buy-mac {
+  margin: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 380px));
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+  width: 100%;
+  max-width: 920px;
+  padding: 48px 40px;
+  box-sizing: border-box;
+}
+
+.buy-mac-left,
+.buy-mac-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.buy-mac-left {
+  align-items: center;
+  text-align: center;
+}
+
+/* The message hangs just under the right column, out of the flow, so a
+   two-line message never moves the button and no empty room is kept for it. */
+.buy-mac-right {
+  position: relative;
+}
+
+.buy-page-icon {
+  align-self: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 26px;
+  background: var(--accent);
+  box-shadow: 0 10px 30px rgba(26, 159, 255, 0.35);
+}
+
+.buy-page-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.buy-page-title {
+  margin: 4px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--text-primary);
+}
+
+.buy-page-line {
+  margin: -6px 0 0;
+  font-size: 15px;
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--text-secondary);
+}
+
+/* The amount billed: the first pricing element and the largest text on the
+   page (App Review 3.1.2(c)). */
+.buy-page-price {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 18px;
+  border: 2px solid var(--accent);
+  border-radius: 16px;
+  background: rgba(26, 159, 255, 0.12);
+  text-align: center;
+}
+
+.buy-page-plan {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hover);
+}
+
+.buy-page-price strong {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.buy-page-paid {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* The start page's timeline: dots joined by a line, the first one filled. */
+.buy-page-steps {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.buy-page-steps li {
+  position: relative;
+  padding: 0 0 10px 30px;
+}
+
+.buy-page-steps li:last-child {
+  padding-bottom: 0;
+}
+
+.buy-page-steps li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg-primary);
+  box-sizing: border-box;
+}
+
+.buy-page-steps li:first-child::before {
+  background: var(--accent);
+}
+
+.buy-page-steps li::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 20px;
+  bottom: 2px;
+  width: 2px;
+  background: var(--border);
+}
+
+.buy-page-steps li:last-child::after {
+  display: none;
+}
+
+.buy-page-steps strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.buy-page-steps span {
+  display: block;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.buy-page-benefits {
+  list-style: none;
+  align-self: stretch;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+  text-align: left;
+}
+
+.buy-page-benefits li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  font-size: 14.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.buy-page-benefits li + li {
+  border-top: 1px solid var(--border);
+}
+
+.buy-page-tick {
+  flex: 0 0 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(26, 159, 255, 0.16);
+  color: var(--accent-hover);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.buy-page-msg {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--error);
+}
+
+.buy-page-msg.note {
+  color: var(--text-secondary);
+}
+
+.buy-page-main {
+  width: 100%;
+  height: 52px;
+  border: none;
+  border-radius: 26px;
+  background: var(--accent);
+  box-shadow: 0 8px 24px rgba(26, 159, 255, 0.3);
+  color: #fff;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.buy-page-main:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.buy-page-main:disabled {
+  opacity: 0.6;
+}
+
+.buy-page-small {
+  margin: -4px 0 0;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.buy-page-restore {
+  height: 44px;
+  margin-top: -6px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.buy-page-restore:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.buy-page-restore:disabled {
+  opacity: 0.5;
+}
+
+@media (max-width: 800px) {
+  .buy-mac {
+    gap: 28px;
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+  .buy-page-benefits li {
+    font-size: 13.5px;
+  }
+}
+
+/* A short window: less room above and below, so the start page still fits
+   without scrolling. */
+@media (max-height: 600px) {
+  .buy-mac {
+    padding-top: 36px;
+    padding-bottom: 16px;
+  }
+}
+
+/* Answers to Buy or Restore pressed where there is no message line. */
+.license-alert-overlay {
+  z-index: 1100;
+}
+
+.dialog.license-alert {
+  min-width: 340px;
+  max-width: 420px;
+}
+
+.license-alert .dialog-body {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.license-alert-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.license-alert-actions .dialog-btn {
+  min-width: 90px;
+}
+
+/* Settings on a Mac: sections, each a small heading over one rounded list of
+   full-width rows, like the Mac's own System Settings. */
+.dialog-overlay.mac-settings-overlay {
+  z-index: 200;
+  animation: fadeIn 0.15s ease;
+}
+
+.mac-settings {
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+/* Outside the scrolling part, so the title and the cross stay at the top. */
+.mac-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 8px 20px;
+  flex-shrink: 0;
+}
+
+.mac-settings-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mac-settings-close {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.mac-settings-close:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.mac-settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 14px;
+}
+
+.mac-settings-heading {
+  margin: 16px 0 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.mac-settings-heading:first-child {
+  margin-top: 4px;
+}
+
+.mac-settings-group {
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.mac-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 14px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.mac-settings-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.mac-settings-row + .mac-settings-row {
+  border-top: 1px solid var(--border);
+}
+
+.mac-settings-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mac-settings-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.mac-settings-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.mac-settings-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Danger is colour only, never a box. */
+.mac-settings-row.mac-settings-danger {
+  color: var(--error);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.mac-settings-select {
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.mac-settings-select:focus {
+  border-color: var(--accent);
+}
+
+.mac-settings-select:disabled {
+  opacity: 0.5;
+}
+
+.mac-switch {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 0 auto;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: #4a4d6c;
+  transition: background 0.15s;
+}
+
+.mac-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+
+.mac-switch:checked {
+  background: var(--accent);
+}
+
+.mac-switch:checked::before {
+  transform: translateX(14px);
+}
+
+.mac-switch:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+/* Restore Purchases on the left, Done on the right, the same size. */
+.mac-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.mac-settings-spacer {
+  flex: 1;
+}
+
+.mac-btn {
+  width: 150px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.mac-btn-ghost {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.mac-btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.mac-btn-ghost:disabled {
+  opacity: 0.5;
+}
+
+.mac-btn-accent {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+
+.mac-btn-accent:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}

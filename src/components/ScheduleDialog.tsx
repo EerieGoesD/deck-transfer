@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { IS_MAC } from "../utils";
 
 interface ScheduleConfig {
   id: string;
@@ -106,7 +107,11 @@ export default function ScheduleDialog({
               className="schedule-input"
               value={localDir}
               onChange={(e) => setLocalDir(e.target.value)}
-              placeholder="C:\Users\...\my-files"
+              placeholder={IS_MAC ? "Choose a folder with Browse" : "C:\\Users\\...\\my-files"}
+              // Mac: the sandbox only lets the app read a folder picked with
+              // Browse, so a typed path would find nothing.
+              readOnly={IS_MAC}
+              onClick={IS_MAC ? pickFolder : undefined}
             />
             <button className="sync-browse-btn" onClick={pickFolder}>Browse</button>
           </div>

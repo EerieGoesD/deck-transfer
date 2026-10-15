@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { formatSize, formatSpeed } from "../utils";
+import { formatSize, formatSpeed, IS_MAC } from "../utils";
 import ScheduleDialog from "./ScheduleDialog";
 import RemoteFolderPicker from "./RemoteFolderPicker";
 import type { Bookmark } from "../types";
@@ -175,8 +175,12 @@ export default function SyncTab({ deckIp, password, speedLimit, isPro, onUpgrade
               className="sync-folder-input"
               value={localDir}
               onChange={(e) => setLocalDir(e.target.value)}
-              placeholder="C:\Users\...\my-files"
+              placeholder={IS_MAC ? "Choose a folder with Browse" : "C:\\Users\\...\\my-files"}
               disabled={syncing}
+              // Mac: the sandbox only lets the app read a folder picked with
+              // Browse, so a typed path would find nothing.
+              readOnly={IS_MAC}
+              onClick={IS_MAC ? pickLocalFolder : undefined}
             />
             <button className="sync-browse-btn" onClick={pickLocalFolder} disabled={syncing}>
               Browse

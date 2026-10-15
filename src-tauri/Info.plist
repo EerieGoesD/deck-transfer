@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Deck Transfer looks for your Steam Deck on your local network, or on the cable between your Mac and the Deck, and sends your files to it. For example, it finds a Deck at 192.168.1.42 on your Wi-Fi and copies a 4 GB game to it. It only sends files to the Deck you connect to, and nothing is sent anywhere else.</string>
+</dict>
+</plist>

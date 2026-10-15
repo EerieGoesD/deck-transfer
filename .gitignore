@@ -35,3 +35,6 @@ msix-package/resources.pri
 
 # MSIX cert test output
 deck transfer.xml
+
+# Mac App Store provisioning profile (account-specific, download it per machine)
+src-tauri/embedded.provisionprofile

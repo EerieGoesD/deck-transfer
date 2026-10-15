@@ -1,0 +1,30 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "app": {
+    "windows": [
+      {
+        "title": "Deck Transfer",
+        "width": 1180,
+        "height": 720,
+        "minWidth": 1120,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "devtools": false,
+        "theme": "Dark",
+        "backgroundColor": "#1a1b2e"
+      }
+    ]
+  },
+  "bundle": {
+    "category": "Utility",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "bundleVersion": "1",
+      "entitlements": "./Entitlements.plist",
+      "files": {
+        "embedded.provisionprofile": "embedded.provisionprofile"
+      }
+    }
+  }
+}

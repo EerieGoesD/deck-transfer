@@ -121,11 +121,15 @@ fn list_remote_files_recursive(
 
 #[tauri::command]
 pub async fn compare_folders(
+    app: AppHandle,
     deck_ip: String,
     deck_password: String,
     local_dir: String,
     remote_dir: String,
 ) -> Result<SyncPlan, String> {
+    crate::licensing::require_access(&app).await?;
+    #[cfg(target_os = "macos")]
+    crate::mac::ensure_access(&app, &[local_dir.as_str()]);
     let local_dir_clone = local_dir.clone();
     let remote_dir_clone = remote_dir.clone();
 
@@ -238,6 +242,9 @@ pub async fn execute_sync(
     plan: SyncPlan,
     speed_limit: Option<u64>,
 ) -> Result<SyncResult, String> {
+    crate::licensing::require_access(&app).await?;
+    #[cfg(target_os = "macos")]
+    crate::mac::ensure_access(&app, &[plan.local_dir.as_str()]);
     if let Some(limit) = speed_limit {
         SPEED_LIMIT.store(limit as usize, Ordering::Relaxed);
     }

@@ -2,6 +2,9 @@ mod store;
 mod history;
 mod sync;
 mod scheduler;
+mod licensing;
+#[cfg(target_os = "macos")]
+mod mac;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -17,6 +20,8 @@ use tauri::{Emitter, Manager};
 use std::os::windows::process::CommandExt;
 use tokio::sync::Mutex;
 
+// The Mac finds its ports through mac.rs instead.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod network;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +135,41 @@ fn clear_debug_logs() {
 
 const MAX_HANDSHAKE_RETRIES: usize = 3;
 
+/// The Deck's SSH address. An IPv4 address, or (on a Mac's direct cable) an
+/// IPv6 link-local address with its port name or number, e.g. fe80::1%en5.
+fn deck_socket_addr(ip: &str) -> Result<SocketAddr, String> {
+    if let Some((addr, scope)) = ip.split_once('%') {
+        let v6: std::net::Ipv6Addr = addr.parse().map_err(|e| format!("Invalid address: {}", e))?;
+        let scope_id = match scope.parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let c = std::ffi::CString::new(scope).map_err(|e| format!("Invalid address: {}", e))?;
+                    unsafe { libc::if_nametoindex(c.as_ptr()) }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    0
+                }
+            }
+        };
+        if scope_id == 0 {
+            return Err(format!("Network port {} is not connected", scope));
+        }
+        return Ok(SocketAddr::V6(std::net::SocketAddrV6::new(v6, 22, 0, scope_id)));
+    }
+    format!("{}:22", ip)
+        .parse()
+        .map_err(|e| format!("Invalid address: {}", e))
+}
+
+/// What the user's computer is called in messages.
+#[cfg(target_os = "macos")]
+const COMPUTER: &str = "Mac";
+#[cfg(not(target_os = "macos"))]
+const COMPUTER: &str = "PC";
+
 fn check_ssh(ip: Ipv4Addr, timeout_ms: u64) -> Option<(String, String)> {
     let addr = SocketAddr::new(IpAddr::V4(ip), 22);
     match TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)) {
@@ -157,9 +197,7 @@ fn check_ssh(ip: Ipv4Addr, timeout_ms: u64) -> Option<(String, String)> {
 
 /// Each retry uses a different kex strategy: defaults first, then custom, then legacy.
 fn try_handshake(ip: &str, password: &str, strategy: usize) -> Result<ssh2::Session, String> {
-    let addr: SocketAddr = format!("{}:22", ip)
-        .parse()
-        .map_err(|e| format!("Invalid address: {}", e))?;
+    let addr = deck_socket_addr(ip)?;
 
     dbg_log("INFO", &format!("[SSH] Connecting to {}:22 ...", ip));
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
@@ -245,9 +283,7 @@ fn try_handshake(ip: &str, password: &str, strategy: usize) -> Result<ssh2::Sess
 /// TCP read timeout fires before the script can finish. This builds a session with
 /// no read/write timeout and no ssh2 session timeout for these specific commands.
 pub(crate) fn create_long_op_session(ip: &str, password: &str) -> Result<ssh2::Session, String> {
-    let addr: SocketAddr = format!("{}:22", ip)
-        .parse()
-        .map_err(|e| format!("Invalid address: {}", e))?;
+    let addr = deck_socket_addr(ip)?;
 
     dbg_log("INFO", &format!("[SSH] (long-op) connecting to {}:22 ...", ip));
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
@@ -305,6 +341,7 @@ pub(crate) fn create_session(ip: &str, password: &str) -> Result<ssh2::Session, 
 /// "Fully quitting" matters because most VPNs keep a background service running
 /// that holds the tunnel adapter and kill-switch even after you click Disconnect.
 /// Commands that stop a Windows service need an Administrator Command Prompt.
+#[cfg(not(target_os = "macos"))]
 fn vpn_quit_hint(adapter_name: &str) -> String {
     let n = adapter_name.to_lowercase();
     if n.contains("nordlynx") || n.contains("nord") {
@@ -324,6 +361,13 @@ fn vpn_quit_hint(adapter_name: &str) -> String {
     }
 }
 
+/// On a Mac every VPN shows up as a generic utun or ipsec port, so the adapter
+/// name cannot tell which app it belongs to.
+#[cfg(target_os = "macos")]
+fn vpn_quit_hint(_adapter_name: &str) -> String {
+    "Quit your VPN app fully from the menu bar (not just Disconnect) and turn off its kill switch, then scan again.".to_string()
+}
+
 // ---------------------
 // Ethernet direct-connect setup
 // ---------------------
@@ -331,7 +375,16 @@ fn vpn_quit_hint(adapter_name: &str) -> String {
 const DECK_SUBNET_IP: &str = "10.0.0.1";
 const DECK_SUBNET_MASK: &str = "255.255.255.0";
 
+/// A Mac needs no adapter setup: the scan finds a Deck on a direct cable through
+/// IPv6 link-local addresses, and the App Sandbox could not change network
+/// settings anyway.
+#[cfg(not(windows))]
+fn run_netsh_elevated(_args: &[&str]) -> Result<(), String> {
+    Err("Direct Ethernet setup is only needed on Windows.".to_string())
+}
+
 /// Run a netsh command with given args, elevating via UAC if needed.
+#[cfg(windows)]
 fn run_netsh_elevated(args: &[&str]) -> Result<(), String> {
     dbg_log("INFO", &format!("[NET] Running: netsh {}", args.join(" ")));
 
@@ -423,17 +476,29 @@ async fn scan_for_deck(
     deck_password: String,
     connection_mode: Option<String>,
 ) -> Result<DeckInfo, String> {
+    licensing::require_access(&app).await?;
     let mode = connection_mode.as_deref().unwrap_or("ethernet");
     dbg_log("INFO", &format!("[SCAN] Starting scan in {} mode", mode));
 
+    #[cfg(not(target_os = "macos"))]
     let interfaces = if mode == "wifi" {
         network::find_wifi_interfaces()
     } else {
         network::find_ethernet_interfaces()
     }
     .map_err(|e| format!("Failed to enumerate network interfaces: {}", e))?;
+    #[cfg(not(target_os = "macos"))]
+    let no_ports = interfaces.is_empty();
 
-    if interfaces.is_empty() {
+    // A Mac names its ports en0, en5... so they are told apart by kind, and a
+    // wired port with no IPv4 address (a direct cable) is still scanned through
+    // its IPv6 link-local address.
+    #[cfg(target_os = "macos")]
+    let (interfaces, mac_links) = mac::find_interfaces(mode == "wifi");
+    #[cfg(target_os = "macos")]
+    let no_ports = interfaces.is_empty() && mac_links.is_empty();
+
+    if no_ports {
         let msg = if mode == "wifi" {
             "No Wi-Fi interfaces found. Make sure Wi-Fi is enabled and connected to the same network as your Steam Deck."
         } else {
@@ -574,8 +639,45 @@ async fn scan_for_deck(
         }
     }
 
+    // Mac: ask everything on each link to answer over IPv6 link-local, then look
+    // for SSH on whoever answered. This is what finds a Deck on a direct cable,
+    // where neither side has an IPv4 address. On Wi-Fi it only runs when the
+    // IPv4 sweep found nothing.
+    #[cfg(target_os = "macos")]
+    if mode != "wifi" || ssh_devices.is_empty() {
+        let timeout = ssh_timeout_ms.max(400);
+        let found = tokio::task::spawn_blocking(move || {
+            let own = mac::own_v6_addresses();
+            let mut out: Vec<(String, String, String)> = Vec::new();
+            for link in &mac_links {
+                let neighbors = mac::ipv6_neighbors(link, &own);
+                dbg_log(
+                    "INFO",
+                    &format!("[SCAN] {}: {} device(s) answered over IPv6 link-local", link.name, neighbors.len()),
+                );
+                let hits: Vec<(std::net::Ipv6Addr, String)> = std::thread::scope(|s| {
+                    let handles: Vec<_> = neighbors
+                        .iter()
+                        .map(|ip| s.spawn(move || mac::check_ssh_v6(*ip, link, timeout).map(|b| (*ip, b))))
+                        .collect();
+                    handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+                });
+                for (ip, banner) in hits {
+                    out.push((format!("{}%{}", ip, link.name), banner, link.name.clone()));
+                }
+            }
+            out
+        })
+        .await
+        .unwrap_or_default();
+        ssh_devices.extend(found);
+    }
+
     if ssh_devices.is_empty() {
         dbg_log("ERROR", "[SCAN] No SSH devices found on the network");
+        #[cfg(target_os = "macos")]
+        return Err("No Steam Deck found. Make sure SSH is enabled on the Deck and the cable is connected (or both devices are on the same Wi-Fi).\n\nIf your Mac asked whether Deck Transfer may find devices on your local network, choose Allow, then scan again. You can also turn it on in System Settings > Privacy & Security > Local Network.".to_string());
+        #[cfg(not(target_os = "macos"))]
         return Err("No Steam Deck found. Make sure SSH is enabled on the Deck and the cable is connected (or both devices are on the same Wi-Fi).".to_string());
     }
 
@@ -654,8 +756,9 @@ async fn scan_for_deck(
 
     if handshake_failed {
         return Err(format!(
-            "Reached {} device(s) but the encryption handshake failed.\n\nThis is usually a VPN, firewall, or antivirus on your PC blocking SSH. Fully quit any VPN app and turn off firewall/antivirus, or connect with a direct Ethernet cable instead, then scan again.\n\nLast error: {}",
+            "Reached {} device(s) but the encryption handshake failed.\n\nThis is usually a VPN, firewall, or antivirus on your {} blocking SSH. Fully quit any VPN app and turn off firewall/antivirus, or connect with a direct Ethernet cable instead, then scan again.\n\nLast error: {}",
             ssh_devices.len(),
+            COMPUTER,
             last_error
         ));
     }
@@ -683,6 +786,8 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<FileInfo>, String> {
                 result.push(FileInfo { path: p, size });
             }
             dbg_log("INFO", &format!("[FILES] {} file(s) selected", result.len()));
+            #[cfg(target_os = "macos")]
+            mac::remember(&app, &result.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
             Ok(result)
         }
         None => {
@@ -697,9 +802,35 @@ async fn pick_local_folder(app: tauri::AppHandle) -> Result<Option<String>, Stri
     use tauri_plugin_dialog::DialogExt;
     let folder = app.dialog().file().blocking_pick_folder();
     match folder {
-        Some(path) => Ok(Some(path.to_string())),
+        Some(path) => {
+            let path = path.to_string();
+            #[cfg(target_os = "macos")]
+            mac::remember(&app, std::slice::from_ref(&path));
+            Ok(Some(path))
+        }
         None => Ok(None),
     }
+}
+
+/// Sizes for files dropped on the window. Folders are skipped.
+#[tauri::command]
+async fn file_infos(app: tauri::AppHandle, paths: Vec<String>) -> Result<Vec<FileInfo>, String> {
+    let result: Vec<FileInfo> = paths
+        .into_iter()
+        .filter_map(|p| {
+            let md = std::fs::metadata(&p).ok()?;
+            if !md.is_file() {
+                return None;
+            }
+            Some(FileInfo { path: p, size: md.len() })
+        })
+        .collect();
+    dbg_log("INFO", &format!("[FILES] {} file(s) dropped", result.len()));
+    #[cfg(target_os = "macos")]
+    mac::remember(&app, &result.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -721,10 +852,12 @@ async fn save_profile_to_file(app: tauri::AppHandle, json: String) -> Result<(),
 
 #[tauri::command]
 async fn list_remote_dir(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     remote_path: String,
 ) -> Result<Vec<RemoteEntry>, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[SFTP] Listing directory: {} on {}", remote_path, deck_ip));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -768,10 +901,12 @@ async fn list_remote_dir(
 
 #[tauri::command]
 async fn create_remote_dir(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     remote_path: String,
 ) -> Result<(), String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[SFTP] Creating remote dir: {} on {}", remote_path, deck_ip));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -791,10 +926,12 @@ async fn create_remote_dir(
 
 #[tauri::command]
 async fn create_remote_file(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     remote_path: String,
 ) -> Result<(), String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[REMOTE] Creating file: {} on {}", remote_path, deck_ip));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -813,11 +950,13 @@ async fn create_remote_file(
 
 #[tauri::command]
 async fn rename_remote(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     old_path: String,
     new_path: String,
 ) -> Result<(), String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[REMOTE] Renaming: {} -> {}", old_path, new_path));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -836,11 +975,13 @@ async fn rename_remote(
 
 #[tauri::command]
 async fn delete_remote(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     remote_path: String,
     is_dir: bool,
 ) -> Result<(), String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[REMOTE] Deleting: {} (is_dir={})", remote_path, is_dir));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -880,9 +1021,11 @@ pub struct RemoteDiskInfo {
 
 #[tauri::command]
 async fn get_remote_disk_usage(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
 ) -> Result<Vec<RemoteDiskInfo>, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[DISK] Reading disk usage on {}", deck_ip));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -970,11 +1113,13 @@ pub struct RomScanResult {
 
 #[tauri::command]
 async fn scan_rom_layout(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     internal_root: String,
     sd_root: String,
 ) -> Result<RomScanResult, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[REBAL] Scanning {} and {}", internal_root, sd_root));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -1100,12 +1245,14 @@ pub struct RebalanceMoveResult {
 // After move, source location gets a symlink pointing at the destination.
 #[tauri::command]
 async fn move_rom_file(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     internal_path: String,
     sd_path: String,
     direction: String,
 ) -> Result<RebalanceMoveResult, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[REBAL] Move {} dir={}", internal_path, direction));
     tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
         // Long-op session: cp of multi-GB files across the SD card bus can run for minutes
@@ -1171,11 +1318,13 @@ async fn move_rom_file(
 // changed between scan and apply.
 #[tauri::command]
 async fn safe_delete_remote_file(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     path: String,
     expected_size: u64,
 ) -> Result<RebalanceMoveResult, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[CLEAN] rm '{}' (expected size {})", path, expected_size));
     tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -1213,11 +1362,13 @@ async fn safe_delete_remote_file(
 // Same-disk rename for the "Misplaced ROMs" feature. Refuses to clobber an existing dst.
 #[tauri::command]
 async fn rename_remote_file(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     src_path: String,
     dst_path: String,
 ) -> Result<RebalanceMoveResult, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[MISP] mv '{}' -> '{}'", src_path, dst_path));
     tokio::task::spawn_blocking(move || -> Result<RebalanceMoveResult, String> {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -1254,11 +1405,13 @@ async fn rename_remote_file(
 
 #[tauri::command]
 async fn check_remote_files(
+    app: tauri::AppHandle,
     deck_ip: String,
     deck_password: String,
     remote_dir: String,
     file_names: Vec<String>,
 ) -> Result<Vec<RemoteFileCheck>, String> {
+    licensing::require_access(&app).await?;
     dbg_log("INFO", &format!("[CONFLICT] Checking {} file(s) in {} on {}", file_names.len(), remote_dir, deck_ip));
     tokio::task::spawn_blocking(move || {
         let session = create_session(&deck_ip, &deck_password)?;
@@ -1307,6 +1460,9 @@ async fn transfer_file(
     remote_dir: String,
     speed_limit: Option<u64>,
 ) -> Result<(), String> {
+    licensing::require_access(&app).await?;
+    #[cfg(target_os = "macos")]
+    mac::ensure_access(&app, &[file_path.as_str()]);
     let path = Path::new(&file_path);
     if !path.exists() {
         return Err(format!("File not found: {}", file_path));
@@ -1514,9 +1670,12 @@ async fn transfer_batch_sftp(
     remote_dir: String,
     speed_limit: Option<u64>,
 ) -> Result<Vec<BatchFileResult>, String> {
+    licensing::require_access(&app).await?;
     if files.is_empty() {
         return Ok(vec![]);
     }
+    #[cfg(target_os = "macos")]
+    mac::ensure_access(&app, &files.iter().map(|f| f.file_path.as_str()).collect::<Vec<_>>());
 
     if let Some(limit) = speed_limit {
         SPEED_LIMIT.store(limit as usize, Ordering::Relaxed);
@@ -1922,13 +2081,135 @@ async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------
+// App usage readout: version, CPU, memory, cache
+// ---------------------
+// Every number is about this app alone, never the whole machine.
+
+// CPU share used since the previous reading, spread across all cores, and the
+// memory footprint (the figure Activity Monitor shows) as a share of total RAM.
+// The first CPU reading has nothing to compare with, so it is 0.0%.
+#[cfg(target_os = "macos")]
+fn read_usage() -> (String, String) {
+    static LAST: StdMutex<Option<(u64, Instant)>> = StdMutex::new(None);
+
+    unsafe {
+        let mut info: libc::rusage_info_v2 = std::mem::zeroed();
+        // The third argument is void**: pass the struct pointer cast to it. A
+        // pointer to a separate void* "succeeds" and leaves every field at zero.
+        let ok = libc::proc_pid_rusage(
+            std::process::id() as i32,
+            libc::RUSAGE_INFO_V2,
+            &mut info as *mut _ as *mut *mut libc::c_void,
+        ) == 0;
+        if !ok {
+            return ("n/a".into(), "n/a".into());
+        }
+
+        // User plus kernel time: transfers spend much of their effort in I/O.
+        let busy = info.ri_user_time + info.ri_system_time;
+        let now = Instant::now();
+        let cores = libc::sysconf(libc::_SC_NPROCESSORS_ONLN).max(1) as f64;
+
+        let cpu = {
+            let mut slot = LAST.lock().unwrap();
+            let share = match *slot {
+                Some((was_busy, was_at)) => {
+                    let elapsed = now.duration_since(was_at).as_secs_f64();
+                    if elapsed <= 0.0 {
+                        0.0
+                    } else {
+                        // Nanoseconds on macOS.
+                        let spent = busy.saturating_sub(was_busy) as f64 / 1_000_000_000.0;
+                        (spent / elapsed / cores * 100.0).clamp(0.0, 100.0)
+                    }
+                }
+                None => 0.0,
+            };
+            *slot = Some((busy, now));
+            format!("{share:.1}%")
+        };
+
+        let mut total: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let got = libc::sysctlbyname(
+            b"hw.memsize\0".as_ptr() as *const _,
+            &mut total as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) == 0;
+        let ram = if got && total > 0 {
+            format!("{:.1}%", info.ri_phys_footprint as f64 / total as f64 * 100.0)
+        } else {
+            "n/a".to_string()
+        };
+
+        (cpu, ram)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_usage() -> (String, String) {
+    ("n/a".to_string(), "n/a".to_string())
+}
+
+#[tauri::command]
+fn usage() -> (String, String) {
+    read_usage()
+}
+
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+fn dir_bytes(dir: &Path, depth: usize) -> u64 {
+    if depth > 16 {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        let Ok(md) = entry.metadata() else { continue };
+        if md.is_dir() {
+            total += dir_bytes(&entry.path(), depth + 1);
+        } else if md.is_file() {
+            total += md.len();
+        }
+    }
+    total
+}
+
+// What the app itself has written: saved Decks, settings, history, schedules,
+// the purchase cache, and its log. The webview's own cache is not counted.
+// Returned as bytes; the page formats it.
+#[tauri::command]
+fn cache_size(app: tauri::AppHandle) -> u64 {
+    let mut total = 0;
+    if let Ok(d) = app.path().app_data_dir() {
+        total += dir_bytes(&d, 0);
+    }
+    if let Ok(d) = app.path().app_log_dir() {
+        total += dir_bytes(&d, 0);
+    }
+    total
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    // Mac: the window comes back at the size and position it was closed at, and
+    // the App Store purchase bridge for the free trial.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_iap::init());
+    builder
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -2036,7 +2317,16 @@ pub fn run() {
             scheduler::create_schedule,
             scheduler::get_schedules,
             scheduler::delete_schedule,
-            send_notification
+            send_notification,
+            file_infos,
+            usage,
+            app_version,
+            cache_size,
+            licensing::iap_status,
+            licensing::iap_price,
+            licensing::iap_start_trial,
+            licensing::iap_buy,
+            licensing::iap_restore
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

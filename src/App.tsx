@@ -9,7 +9,11 @@ import MisplacedTab from "./components/MisplacedTab";
 import CleanupTab from "./components/CleanupTab";
 import RomFinderTab from "./components/RomFinderTab";
 import UpgradeModal from "./components/UpgradeModal";
+import MacSettings from "./components/MacSettings";
 import { getCachedProStatus, clearProStatus, revalidateCachedKey, PRO_INCLUDED } from "./services/premium";
+import { useLicense, TrialBar, BuyPage, LicenseAlert } from "./licensing";
+import { IS_MAC, COMPUTER } from "./utils";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 interface FileEntry {
   id: string;
@@ -93,6 +97,15 @@ function formatEta(seconds: number): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+// The cache figure in the usage line under the title (Mac).
+function formatBytes(n: number): string {
+  if (!n) return "0 KB";
+  if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+const METRICS_KEY = "decktransfer_metrics";
+
 const MAX_RETRIES = 2;
 
 function App() {
@@ -160,6 +173,64 @@ function App() {
   const [isPro, setIsPro] = useState(PRO_INCLUDED);
   const [proEmail, setProEmail] = useState<string | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  // Mac App Store free trial (inert everywhere else).
+  const lic = useLicense();
+
+  // Mac: version, CPU, RAM and cache under the title. CPU, RAM and cache are on
+  // by default and show or hide together; hidden means not measured.
+  const [appVersion, setAppVersion] = useState("");
+  const [cpuStr, setCpuStr] = useState("");
+  const [ramStr, setRamStr] = useState("");
+  const [cacheStr, setCacheStr] = useState("");
+  const [metricsOn, setMetricsOn] = useState(() => {
+    try {
+      return localStorage.getItem(METRICS_KEY) !== "0"; // an unset key is a first run, and a first run is on
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    if (!IS_MAC) return;
+    invoke<string>("app_version").then(setAppVersion).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!IS_MAC) return;
+    try {
+      localStorage.setItem(METRICS_KEY, metricsOn ? "1" : "0");
+    } catch {}
+    if (!metricsOn) {
+      setCpuStr("");
+      setRamStr("");
+      setCacheStr("");
+      return;
+    }
+    const refresh = () => {
+      invoke<[string, string]>("usage")
+        .then(([cpu, ram]) => {
+          setCpuStr(cpu);
+          setRamStr(ram);
+        })
+        .catch(() => {});
+      invoke<number>("cache_size")
+        .then((n) => setCacheStr(formatBytes(n)))
+        .catch(() => {});
+    };
+    refresh();
+    const timer = setInterval(refresh, 2000);
+    return () => clearInterval(timer);
+  }, [metricsOn]);
+
+  const usageLine = [
+    appVersion ? "v" + appVersion : "",
+    metricsOn && cpuStr && cpuStr !== "n/a" ? "CPU: " + cpuStr : "",
+    metricsOn && ramStr && ramStr !== "n/a" ? "RAM: " + ramStr : "",
+    metricsOn && cacheStr ? "Cache: " + cacheStr : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
 
   // Load persisted data on mount
   useEffect(() => {
@@ -394,7 +465,7 @@ function App() {
       if (e.key !== "Backspace") return;
       if (!deck) return;
       if (activeTab !== "transfer") return;
-      if (showSettings || showConflictDialog || showUpgradeModal) return;
+      if (showSettings || showConflictDialog || showUpgradeModal || lic.pageUp) return;
       if (promptType || renameTarget || contextMenu) return;
       if (currentDir === "/") return;
       const t = e.target as HTMLElement | null;
@@ -407,7 +478,24 @@ function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, promptType, renameTarget, contextMenu, currentDir, navigateUp]);
+  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, lic.pageUp, promptType, renameTarget, contextMenu, currentDir, navigateUp]);
+
+  // Mac: Cmd+, opens Settings (unless a purchase page covers the window), and
+  // Esc closes it.
+  useEffect(() => {
+    if (!IS_MAC) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === ",") {
+        e.preventDefault();
+        if (!lic.pageUp) setShowSettings(true);
+      } else if (e.key === "Escape" && showSettings && !lic.alertText) {
+        e.preventDefault();
+        setShowSettings(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showSettings, lic.pageUp, lic.alertText]);
 
   // Mouse back (button 3) -> navigate up. Mouse forward (button 4) -> history forward.
   useEffect(() => {
@@ -416,7 +504,7 @@ function App() {
       e.preventDefault();
       if (!deck) return;
       if (activeTab !== "transfer") return;
-      if (showSettings || showConflictDialog || showUpgradeModal) return;
+      if (showSettings || showConflictDialog || showUpgradeModal || lic.pageUp) return;
       if (promptType || renameTarget || contextMenu) return;
       if (e.button === 3) {
         if (currentDir === "/") return;
@@ -427,7 +515,7 @@ function App() {
     };
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
-  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, promptType, renameTarget, contextMenu, currentDir, navigateUp, navigateForward]);
+  }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, lic.pageUp, promptType, renameTarget, contextMenu, currentDir, navigateUp, navigateForward]);
 
   // Close context menu on any click
   useEffect(() => {
@@ -663,6 +751,49 @@ function App() {
     } catch (e) {
       console.error("File pick failed:", e);
     }
+  }, [addFiles]);
+
+  // Mac: files dragged onto the window arrive through the webview's native drop
+  // event, which carries their full paths (the page's own drop event has only
+  // names). Dropping on the Transfer tab queues them.
+  const dropReadyRef = useRef(false);
+  dropReadyRef.current =
+    !!deck && activeTab === "transfer" && !transferring && !showSettings && !showConflictDialog && !lic.pageUp;
+  useEffect(() => {
+    if (!IS_MAC) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    try {
+      getCurrentWebview()
+        .onDragDropEvent(async (event) => {
+          const p = event.payload;
+          if (p.type === "enter" || p.type === "over") {
+            setDragOver(dropReadyRef.current);
+          } else if (p.type === "leave") {
+            setDragOver(false);
+          } else if (p.type === "drop") {
+            setDragOver(false);
+            if (!dropReadyRef.current || p.paths.length === 0) return;
+            try {
+              const infos = await invoke<{ path: string; size: number }[]>("file_infos", { paths: p.paths });
+              if (infos.length > 0) addFiles(infos.map((f) => f.path), infos.map((f) => f.size));
+            } catch (e) {
+              console.error("Drop failed:", e);
+            }
+          }
+        })
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+    } catch {
+      // Not running inside the app (browser preview).
+    }
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [addFiles]);
 
   const removeFile = useCallback((id: string) => {
@@ -1000,14 +1131,21 @@ function App() {
   const remoteFiles = visibleEntries.filter((e) => !e.is_dir);
 
   return (
-    <div className="app">
+    <div className={`app ${IS_MAC ? "mac" : ""}`}>
       <div className="header">
         <div className="header-left">
-          <h1>Deck Transfer</h1>
+          {IS_MAC ? (
+            <div className="brand">
+              <h1>Deck Transfer</h1>
+              <div className="brand-sub">{usageLine}</div>
+            </div>
+          ) : (
+            <h1>Deck Transfer</h1>
+          )}
           {deck && (
             <span className="header-ip" title="Steam Deck IP address">
               <span className="header-ip-label">Deck IP</span>
-              <span className="header-ip-value">{deck.ip}</span>
+              <span className="header-ip-value" title={deck.ip}>{deck.ip}</span>
             </span>
           )}
         </div>
@@ -1090,7 +1228,45 @@ function App() {
         </div>
       </div>
 
-      {showSettings && (
+      <TrialBar lic={lic} />
+
+      {showSettings && IS_MAC && (
+        <MacSettings
+          connectionMode={settings.connectionMode}
+          speedLimit={settings.speedLimit}
+          transferProtocol={settings.transferProtocol}
+          autoClear={settings.autoClear}
+          connected={!!deck}
+          transferring={transferring}
+          transferStats={transferStats}
+          metricsOn={metricsOn}
+          lic={lic}
+          onConnectionMode={(mode) => updateSettings((s) => ({ ...s, connectionMode: mode }))}
+          onSpeedLimit={(val) => {
+            updateSettings((s) => ({ ...s, speedLimit: val }));
+            invoke("set_speed_limit", { limit: val }).catch(() => {});
+          }}
+          onProtocol={(protocol) => updateSettings((s) => ({ ...s, transferProtocol: protocol }))}
+          onAutoClear={(on) => updateSettings((s) => ({ ...s, autoClear: on }))}
+          onMetrics={setMetricsOn}
+          onDisconnect={() => {
+            setDeck(null);
+            setFiles([]);
+            setDirEntries([]);
+            setScanError(null);
+            setForwardStack([]);
+          }}
+          onImported={() => {
+            invoke<SavedConnection[]>("get_connections").then(setSavedConnections).catch(() => {});
+            invoke<Bookmark[]>("get_bookmarks").then(setBookmarks).catch(() => {});
+            invoke<TransferStats>("get_transfer_stats").then(setTransferStats).catch(() => {});
+          }}
+          onOpenDebug={openDebugWindow}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showSettings && !IS_MAC && (
         <div className="settings-overlay" onClick={() => setShowSettings(false)}>
           <div className="settings-drawer" onClick={(e) => e.stopPropagation()}>
           <div className="settings-header">
@@ -1804,7 +1980,7 @@ function App() {
                 </div>
               </div>
 
-              {settings.connectionMode === "ethernet" && (
+              {settings.connectionMode === "ethernet" && !IS_MAC && (
                 <div className="setup-section">
                   <label className="setup-label">Direct Ethernet</label>
                   <div className="direct-ethernet-row">
@@ -1919,8 +2095,8 @@ function App() {
                   <span className="step-number">1</span>
                   <span>
                     {settings.connectionMode === "ethernet"
-                      ? "Plug an ethernet cable between your PC and Steam Deck"
-                      : "Connect your PC and Steam Deck to the same Wi-Fi network"}
+                      ? `Plug an ethernet cable between your ${COMPUTER} and Steam Deck`
+                      : `Connect your ${COMPUTER} and Steam Deck to the same Wi-Fi network`}
                   </span>
                 </div>
                 <div className="step">
@@ -1972,17 +2148,32 @@ function App() {
         </div>
       )}
 
-      <div className="footer">
+      <div
+        className="footer"
+        onClick={(e) => {
+          // Mac: the webview does not open new-window links, so hand them to the browser.
+          if (!IS_MAC) return;
+          const a = (e.target as HTMLElement).closest("a");
+          if (!a || !/^https?:/.test(a.href)) return;
+          e.preventDefault();
+          invoke("open_url", { url: a.href }).catch(() => {});
+        }}
+      >
         <span>
           Made by{" "}
           <a href="https://eeriegoesd.com" target="_blank" rel="noreferrer" className="footer-author">
             EERIE
           </a>
         </span>
-        <span className="footer-sep">|</span>
-        <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer" className="footer-coffee">
-          Support This Project
-        </a>
+        {/* Windows only. Guideline 3.1.1 bans links to outside payment from a Mac App Store build. */}
+        {!IS_MAC && (
+          <>
+            <span className="footer-sep">|</span>
+            <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer" className="footer-coffee">
+              Support This Project
+            </a>
+          </>
+        )}
         <span className="footer-sep">|</span>
         <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>
         <span className="footer-sep">|</span>
@@ -2048,6 +2239,10 @@ function App() {
           </button>
         </div>
       )}
+
+      {/* Mac App Store: the start page, the paywall and the offer */}
+      <BuyPage lic={lic} />
+      <LicenseAlert lic={lic} />
 
       {/* Upgrade modal */}
       {!PRO_INCLUDED && showUpgradeModal && (

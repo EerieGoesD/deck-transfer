@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { IS_MAC } from "../utils";
 
-export const PRO_INCLUDED = import.meta.env.VITE_PRO_INCLUDED === "true";
+// The Mac App Store build always includes Pro: Guideline 3.1.1 bans the outside
+// (Stripe) purchase there, and the Mac sells the app through its free trial.
+export const PRO_INCLUDED = import.meta.env.VITE_PRO_INCLUDED === "true" || IS_MAC;
 
 const CHECK_PRO_URL = "https://jhuxxolbcrjerztwqyap.supabase.co/functions/v1/deck-transfer-check-pro";
 

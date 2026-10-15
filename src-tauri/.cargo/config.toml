@@ -1,0 +1,3 @@
+# StoreKit 2 (tauri-plugin-iap) needs a macOS 13 deployment target.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "13.0"
