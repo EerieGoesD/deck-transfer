@@ -13,7 +13,7 @@ import { IS_MAC } from "./utils";
 const TRIAL_DAYS = 7; // MUST match TRIAL_MS in src-tauri/src/licensing.rs
 const DAY_MS = 86400000;
 // Preview the screens without the store: start | trial | expired | owned,
-// optionally ":noprice" (e.g. "trial:noprice").
+// optionally ":noprice" (e.g. "trial:noprice"). Read in development only.
 const DEV_LICENSE_KEY = "decktransfer_dev_license";
 const CANCEL_NOTE = "Purchase canceled.";
 const STORE_UNREACHABLE = "Can't connect to the App Store. Check your internet connection and try again.";
@@ -27,6 +27,8 @@ interface LicenseStatus {
   trialStartMs: number;
   storeReady: boolean;
   storeBuild: boolean;
+  /** The backend's time for the trial: ignores the clock going back. */
+  nowMs: number;
 }
 
 interface Message {
@@ -59,6 +61,9 @@ export function useLicense() {
   // Places with no message line (the trial bar, Settings) answer in an alert.
   const [alertText, setAlertText] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  // How far the backend's trial time is ahead of this Mac's clock (a clock set
+  // back). The countdown and the lock use the same time as the backend.
+  const clockAhead = useRef(0);
   const devPreview = useRef<string | null>(null);
 
   // Read the store's answer (asking again when none is passed in). Only a real
@@ -76,6 +81,8 @@ export function useLicense() {
     if (live && status) {
       setOwned(!!status.owned);
       setTrialStartMs(Number(status.trialStartMs) || 0);
+      clockAhead.current = Math.max(0, (Number(status.nowMs) || 0) - Date.now());
+      setNow(Date.now() + clockAhead.current);
     }
     let p = "";
     try {
@@ -86,10 +93,14 @@ export function useLicense() {
 
   useEffect(() => {
     (async () => {
+      // Development only: a release build never reads the preview switch, so it
+      // cannot be used to skip the trial.
       let dev: string | null = null;
-      try {
-        dev = localStorage.getItem(DEV_LICENSE_KEY);
-      } catch {}
+      if (import.meta.env.DEV) {
+        try {
+          dev = localStorage.getItem(DEV_LICENSE_KEY);
+        } catch {}
+      }
       const [devState, devOpt] = String(dev || "").split(":");
       if (["start", "trial", "expired", "owned"].includes(devState)) {
         devPreview.current = devState;
@@ -118,7 +129,7 @@ export function useLicense() {
   // Keep the countdown current and lock the app the moment a trial runs out.
   useEffect(() => {
     if (!storeBuild || owned || trialStartMs <= 0) return;
-    const t = setInterval(() => setNow(Date.now()), 60000);
+    const t = setInterval(() => setNow(Date.now() + clockAhead.current), 60000);
     return () => clearInterval(t);
   }, [storeBuild, owned, trialStartMs]);
 
@@ -152,7 +163,7 @@ export function useLicense() {
     try {
       const ms = Number(await invoke<number>("iap_start_trial")) || Date.now();
       setTrialStartMs(ms);
-      setNow(Date.now());
+      setNow(Math.max(Date.now() + clockAhead.current, ms));
     } catch (e) {
       setMessage(isUserCancel(e) ? { text: CANCEL_NOTE, note: true } : { text: friendlyStoreError(e), note: false });
     } finally {
@@ -200,6 +211,8 @@ export function useLicense() {
         setStoreLive(true);
         setOwned(!!st.owned);
         setTrialStartMs(Number(st.trialStartMs) || 0);
+        clockAhead.current = Math.max(0, (Number(st.nowMs) || 0) - Date.now());
+        setNow(Date.now() + clockAhead.current);
         say(st.owned ? "Purchase restored." : "No purchase found for this Apple ID.", true);
       } catch (e) {
         if (isUserCancel(e)) say(CANCEL_NOTE, true);

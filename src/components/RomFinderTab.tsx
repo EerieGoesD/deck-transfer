@@ -1,10 +1,12 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RomScanResult, RomScanEntry } from "../types";
+import DownloadMenu from "./DownloadMenu";
 
 interface Props {
   deckIp: string;
   password: string;
+  onDownload: (remotePath: string, isDir: boolean) => void;
 }
 
 interface FoundRow {
@@ -34,6 +36,13 @@ function joinPath(root: string, rel: string): string {
   return `${r}/${rel}`;
 }
 
+// Where the ROM's real bytes are; internal when it is on both.
+function realFilePath(r: FoundRow): string | null {
+  if (r.internalKind === "real") return r.internalAbsPath;
+  if (r.sdKind === "real") return r.sdAbsPath;
+  return null;
+}
+
 function formatLocation(realLocation: FoundRow["realLocation"]): string {
   switch (realLocation) {
     case "internal": return "Internal (real file)";
@@ -43,7 +52,7 @@ function formatLocation(realLocation: FoundRow["realLocation"]): string {
   }
 }
 
-export default function RomFinderTab({ deckIp, password }: Props) {
+export default function RomFinderTab({ deckIp, password, onDownload }: Props) {
   const [internalRoot, setInternalRoot] = useState(DEFAULT_INTERNAL);
   const [sdRoot, setSdRoot] = useState(DEFAULT_SD);
   const [scanning, setScanning] = useState(false);
@@ -51,6 +60,8 @@ export default function RomFinderTab({ deckIp, password }: Props) {
   const [scanError, setScanError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selectedRow, setSelectedRow] = useState<FoundRow | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; row: FoundRow } | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -117,24 +128,9 @@ export default function RomFinderTab({ deckIp, password }: Props) {
         </div>
       </div>
 
-      <div className="rebalance-section">
-        <label className="rebalance-label">Internal ROMs folder</label>
-        <input className="rebalance-input" value={internalRoot} onChange={(e) => setInternalRoot(e.target.value)} disabled={scanning} />
-        <label className="rebalance-label">SD card ROMs folder</label>
-        <input className="rebalance-input" value={sdRoot} onChange={(e) => setSdRoot(e.target.value)} disabled={scanning} />
-        <div className="rebalance-btn-row">
-          <button className="rebalance-btn" onClick={runScan} disabled={scanning}>
-            {scanning ? "Scanning..." : scanResult ? "Re-scan" : "Scan"}
-          </button>
-        </div>
-        {scanError && <div className="rebalance-error">{scanError}</div>}
-        {scanResult && (
-          <div className="rebalance-section-hint" style={{ marginTop: 6 }}>
-            Scan ready: {scanResult.entries.length} entries indexed.
-          </div>
-        )}
-      </div>
-
+      {/* Once scanned, search sits right under the description with its results
+          directly below it, so matches show without scrolling. The folders and
+          Re-scan move to the bottom. */}
       {scanResult && (
         <div className="rebalance-section">
           <label className="rebalance-label">Search</label>
@@ -150,11 +146,7 @@ export default function RomFinderTab({ deckIp, password }: Props) {
               {results.length === 0 ? "No matches." : `${results.length} match${results.length === 1 ? "" : "es"}${results.length === 500 ? " (capped at 500, refine your search to see more)" : ""}.`}
             </div>
           )}
-        </div>
-      )}
-
-      {results.length > 0 && (
-        <div className="rebalance-section">
+          {results.length > 0 && (
           <table className="misplaced-table">
             <thead>
               <tr>
@@ -170,9 +162,14 @@ export default function RomFinderTab({ deckIp, password }: Props) {
                 <tr
                   key={r.relativePath}
                   onClick={() => setSelectedRow(r)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenu({ x: e.clientX, y: e.clientY, row: r });
+                  }}
                   className={selectedRow?.relativePath === r.relativePath ? "rom-finder-row-selected" : ""}
                   style={{ cursor: "pointer" }}
-                  title="Click to see full paths"
+                  title="Click to see full paths. Right-click to download it."
                 >
                   <td>{r.relativePath}</td>
                   <td>{formatSize(r.size)}</td>
@@ -183,6 +180,7 @@ export default function RomFinderTab({ deckIp, password }: Props) {
               ))}
             </tbody>
           </table>
+          )}
         </div>
       )}
 
@@ -230,6 +228,37 @@ export default function RomFinderTab({ deckIp, password }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      <div className="rebalance-section">
+        <label className="rebalance-label">Internal ROMs folder</label>
+        <input className="rebalance-input" value={internalRoot} onChange={(e) => setInternalRoot(e.target.value)} disabled={scanning} />
+        <label className="rebalance-label">SD card ROMs folder</label>
+        <input className="rebalance-input" value={sdRoot} onChange={(e) => setSdRoot(e.target.value)} disabled={scanning} />
+        <div className="rebalance-btn-row">
+          <button className="rebalance-btn" onClick={runScan} disabled={scanning}>
+            {scanning ? "Scanning..." : scanResult ? "Re-scan" : "Scan"}
+          </button>
+        </div>
+        {scanError && <div className="rebalance-error">{scanError}</div>}
+        {scanResult && (
+          <div className="rebalance-section-hint" style={{ marginTop: 6 }}>
+            Scan ready: {scanResult.entries.length} entries indexed.
+          </div>
+        )}
+      </div>
+
+      {menu && (
+        <DownloadMenu
+          x={menu.x}
+          y={menu.y}
+          disabledReason={realFilePath(menu.row) ? undefined : "No real file: only orphaned symlinks."}
+          onDownload={() => {
+            const path = realFilePath(menu.row);
+            if (path) onDownload(path, false);
+          }}
+          onClose={closeMenu}
+        />
       )}
     </div>
   );

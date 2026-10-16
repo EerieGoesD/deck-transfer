@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use crate::{create_session, dbg_log, get_transfer_state, clear_transfer_state, TransferProgress, SPEED_LIMIT};
+use crate::{create_session, dbg_log, get_transfer_state, clear_transfer_state, SPEED_LIMIT};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncFileEntry {

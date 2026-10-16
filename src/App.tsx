@@ -8,6 +8,7 @@ import RebalanceTab from "./components/RebalanceTab";
 import MisplacedTab from "./components/MisplacedTab";
 import CleanupTab from "./components/CleanupTab";
 import RomFinderTab from "./components/RomFinderTab";
+import SaveFinderTab from "./components/SaveFinderTab";
 import UpgradeModal from "./components/UpgradeModal";
 import MacSettings from "./components/MacSettings";
 import { getCachedProStatus, clearProStatus, revalidateCachedKey, PRO_INCLUDED } from "./services/premium";
@@ -25,6 +26,11 @@ interface FileEntry {
   eta: number;
   status: "pending" | "transferring" | "paused" | "complete" | "error";
   error?: string;
+  // Set on a copy from the Deck to this computer.
+  direction?: "down";
+  remotePath?: string;
+  isDir?: boolean;
+  localDir?: string;
 }
 
 interface DeckInfo {
@@ -358,6 +364,8 @@ function App() {
           const done = progress >= 100 && total_bytes > 0;
           return {
             ...f,
+            // A download learns its size from the Deck.
+            size: f.direction === "down" ? total_bytes : f.size,
             progress,
             speed: done ? 0 : speed_bps,
             eta: done ? 0 : eta_seconds,
@@ -527,11 +535,18 @@ function App() {
     return () => window.removeEventListener("mouseup", onMouseUp);
   }, [deck, activeTab, showSettings, showConflictDialog, showUpgradeModal, lic.pageUp, promptType, renameTarget, contextMenu, currentDir, navigateUp, navigateForward]);
 
-  // Close context menu on any click
+  // Close context menu on any click, a right-click elsewhere, or when the
+  // window loses focus
   useEffect(() => {
     const close = () => setContextMenu(null);
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("blur", close);
+    };
   }, []);
 
   const handleContextMenu = useCallback(
@@ -876,11 +891,107 @@ function App() {
     await invoke("cancel_transfer", { fileId });
   }, []);
 
+  // Copy a file or folder from the Deck into a folder on this computer. It shows
+  // in the transfer list with the same progress, pause and cancel as sending.
+  const runDownload = useCallback(
+    async (entry: FileEntry) => {
+      if (!deck || !entry.remotePath || !entry.localDir) return;
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === entry.id
+            ? { ...f, status: "transferring", progress: 0, speed: 0, eta: 0, error: undefined }
+            : f
+        )
+      );
+      try {
+        const r = await invoke<{ local_path: string; files: number; failed: number; errors: string[] }>(
+          "download_remote",
+          {
+            fileId: entry.id,
+            deckIp: deck.ip,
+            deckPassword: password,
+            remotePath: entry.remotePath,
+            isDir: !!entry.isDir,
+            localDir: entry.localDir,
+          }
+        );
+        if (r.failed > 0) {
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.id === entry.id
+                ? { ...f, status: "error", error: `${r.failed} of ${r.files + r.failed} files failed: ${r.errors[0]}` }
+                : f
+            )
+          );
+        } else {
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.id === entry.id ? { ...f, status: "complete", progress: 100, speed: 0, eta: 0 } : f
+            )
+          );
+          invoke("send_notification", {
+            title: "Download Complete",
+            body: `${entry.name} saved to ${entry.localDir}`,
+          }).catch(() => {});
+        }
+      } catch (e) {
+        setFiles((prev) =>
+          prev.map((f) => (f.id === entry.id ? { ...f, status: "error", error: String(e) } : f))
+        );
+      }
+    },
+    [deck, password]
+  );
+
+  // Ask where to save, then copy the Deck path there. The Transfer tab shows the
+  // progress, so a download started from another tab switches to it.
+  const downloadRemotePath = useCallback(
+    async (remotePath: string, isDir: boolean) => {
+      if (!deck) return;
+      let localDir: string | null = null;
+      try {
+        localDir = await invoke<string | null>("pick_local_folder");
+      } catch {}
+      if (!localDir) return;
+      const name = remotePath.split("/").filter(Boolean).pop() || remotePath;
+      const entry: FileEntry = {
+        id: crypto.randomUUID(),
+        name,
+        path: remotePath,
+        size: 0,
+        progress: 0,
+        speed: 0,
+        eta: 0,
+        status: "transferring",
+        direction: "down",
+        remotePath,
+        isDir,
+        localDir,
+      };
+      setFiles((prev) => [...prev, entry]);
+      setActiveTab("transfer");
+      runDownload(entry);
+    },
+    [deck, runDownload]
+  );
+
+  const handleDownload = useCallback(
+    (name: string, isDir: boolean) => {
+      setContextMenu(null);
+      downloadRemotePath(`${currentDir === "/" ? "" : currentDir}/${name}`, isDir);
+    },
+    [currentDir, downloadRemotePath]
+  );
+
   const retryFile = useCallback(
     async (fileId: string) => {
       if (!deck) return;
       const file = files.find((f) => f.id === fileId);
       if (!file) return;
+      if (file.direction === "down") {
+        runDownload(file);
+        return;
+      }
 
       setFiles((prev) =>
         prev.map((f) =>
@@ -925,13 +1036,13 @@ function App() {
         );
       }
     },
-    [deck, files, password, currentDir, settings.speedLimit, settings.transferProtocol, loadDir, transferWithRetry]
+    [deck, files, password, currentDir, settings.speedLimit, settings.transferProtocol, loadDir, transferWithRetry, runDownload]
   );
 
   const startTransfer = useCallback(async () => {
     if (!deck || files.length === 0) return;
 
-    const pendingToSend = files.filter((f) => f.status !== "complete");
+    const pendingToSend = files.filter((f) => f.status !== "complete" && f.direction !== "down");
     if (pendingToSend.length === 0) return;
 
     try {
@@ -1131,7 +1242,7 @@ function App() {
     }
   }, [deck, files, password, currentDir, loadDir, transferWithRetry, settings.speedLimit, settings.autoClear, settings.transferProtocol]);
 
-  const pendingFiles = files.filter((f) => f.status !== "complete");
+  const pendingFiles = files.filter((f) => f.status !== "complete" && f.direction !== "down");
   const breadcrumbs = currentDir.split("/").filter(Boolean);
   const dirSearchLower = dirSearch.trim().toLowerCase();
   const visibleEntries = dirSearchLower
@@ -1534,6 +1645,7 @@ function App() {
           <button className={`tab-btn ${activeTab === "fix-rom-paths" ? "tab-active" : ""}`} onClick={() => setActiveTab("fix-rom-paths")}>Fix ROM paths</button>
           <button className={`tab-btn ${activeTab === "cleanup" ? "tab-active" : ""}`} onClick={() => setActiveTab("cleanup")}>Cleanup ROMs</button>
           <button className={`tab-btn ${activeTab === "rom-finder" ? "tab-active" : ""}`} onClick={() => setActiveTab("rom-finder")}>ROM Finder</button>
+          <button className={`tab-btn ${activeTab === "save-finder" ? "tab-active" : ""}`} onClick={() => setActiveTab("save-finder")}>ROM Save Finder</button>
           <div className="tab-spacer" />
         </div>
 
@@ -1542,7 +1654,9 @@ function App() {
           <div className="panel-left">
             <div className="panel-header">
               <span className="panel-title">Destination</span>
-              <span className="panel-subtitle">Files will be sent here</span>
+              <span className="panel-subtitle">
+                Files will be sent here. {IS_MAC ? "Control-click" : "Right-click"} an item to download it.
+              </span>
             </div>
 
             <div className="bookmark-bar-left">
@@ -1792,7 +1906,10 @@ function App() {
                       <button
                         className="clear-all-btn"
                         onClick={() => setFiles([])}
-                        disabled={transferring}
+                        disabled={
+                          transferring ||
+                          files.some((f) => f.direction === "down" && (f.status === "transferring" || f.status === "paused"))
+                        }
                       >
                         Clear All
                       </button>
@@ -1820,6 +1937,11 @@ function App() {
                           <span className="file-item-size">
                             {formatSize(file.size)}
                           </span>
+                          {file.direction === "down" && (
+                            <span className="file-item-dir" title={file.localDir}>
+                              From Deck to {file.localDir?.split(/[/\\]/).filter(Boolean).pop() || file.localDir}
+                            </span>
+                          )}
                           {file.status === "transferring" && file.speed > 0 && (
                             <>
                               <span className="file-item-speed">
@@ -1954,7 +2076,10 @@ function App() {
           <CleanupTab deckIp={deck.ip} password={password} />
         </div>
         <div style={{ display: activeTab === "rom-finder" ? "flex" : "none", flex: 1, minHeight: 0 }}>
-          <RomFinderTab deckIp={deck.ip} password={password} />
+          <RomFinderTab deckIp={deck.ip} password={password} onDownload={downloadRemotePath} />
+        </div>
+        <div style={{ display: activeTab === "save-finder" ? "flex" : "none", flex: 1, minHeight: 0 }}>
+          <SaveFinderTab deckIp={deck.ip} password={password} onDownload={downloadRemotePath} />
         </div>
         </>
       ) : (
@@ -2136,6 +2261,10 @@ function App() {
                 </div>
               </div>
 
+              <div className="setup-warning">
+                Make sure the Steam Deck is not in sleeping mode or with its screen dimmed!
+              </div>
+
               {!isPro && (
                 <div className="setup-pro-cta">
                   <div className="setup-pro-header">
@@ -2205,6 +2334,12 @@ function App() {
                   Open
                 </button>
               )}
+              <button
+                className="ctx-menu-item"
+                onClick={() => handleDownload(contextMenu.target!.name, contextMenu.target!.isDir)}
+              >
+                Download to {COMPUTER}…
+              </button>
               <button
                 className="ctx-menu-item"
                 onClick={() => handleRename(contextMenu.target!.name, contextMenu.target!.isDir)}

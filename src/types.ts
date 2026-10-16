@@ -61,7 +61,7 @@ export interface TransferStats {
 
 export type ConflictAction = "replace" | "skip" | "replace-all" | "skip-all" | "cancel";
 
-export type Tab = "transfer" | "sync" | "history" | "rebalance" | "fix-rom-paths" | "cleanup" | "rom-finder" | "settings";
+export type Tab = "transfer" | "sync" | "history" | "rebalance" | "fix-rom-paths" | "cleanup" | "rom-finder" | "save-finder" | "settings";
 
 export interface RomScanEntry {
   relative_path: string;

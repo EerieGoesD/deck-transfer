@@ -1460,6 +1460,14 @@ body {
   color: var(--text-secondary);
 }
 
+.file-item-dir {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .file-item-error-msg {
   font-size: 0.72rem;
   color: var(--error);
@@ -1862,6 +1870,17 @@ body {
   color: var(--text-secondary);
   font-size: 0.78rem;
   opacity: 0.8;
+}
+
+.setup-warning {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .step code {
@@ -3901,6 +3920,12 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.ctx-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+}
+
 .ctx-menu-danger {
   color: var(--error);
 }
@@ -3953,6 +3978,19 @@ body {
 .app.mac :is(.bookmark-remove, .cleanup-resolve-option, .dir-entry, .drop-zone, .drop-zone .browse-link,
   .rebalance-confirm, .rebalance-strategy-option, .rfp-entry, .rom-finder-detail-path, .sync-bookmark-chip, .toggle-option) {
   cursor: default;
+}
+
+/* The Mac's own pop-up button draws a second, darker shade around its arrows.
+   Menus are drawn flat in the app's colours with one chevron instead. */
+.app.mac select {
+  -webkit-appearance: none;
+  appearance: none;
+  font-family: inherit;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239496b0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 10px 6px;
 }
 
 /* The usage line under the title: lifted out of the flow so its changing length

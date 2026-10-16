@@ -10,7 +10,6 @@
         "minHeight": 640,
         "resizable": true,
         "fullscreen": false,
-        "devtools": false,
         "theme": "Dark",
         "backgroundColor": "#1a1b2e"
       }

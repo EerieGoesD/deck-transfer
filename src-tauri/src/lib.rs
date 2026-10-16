@@ -1,6 +1,8 @@
 mod store;
 mod history;
 mod sync;
+mod download;
+mod saves;
 mod scheduler;
 mod licensing;
 #[cfg(target_os = "macos")]
@@ -132,8 +134,6 @@ fn clear_debug_logs() {
 // ---------------------
 // SSH helpers
 // ---------------------
-
-const MAX_HANDSHAKE_RETRIES: usize = 3;
 
 /// The Deck's SSH address. An IPv4 address, or (on a Mac's direct cable) an
 /// IPv6 link-local address with its port name or number, e.g. fe80::1%en5.
@@ -1146,7 +1146,7 @@ async fn scan_rom_layout(
             return Err(format!("Unexpected scan output (got {} sections)", parts.len()));
         }
 
-        struct RawEntry { is_symlink: bool, size: u64, path: String, target: String }
+        struct RawEntry { is_symlink: bool, size: u64, target: String }
         fn parse(section: &str, root: &str) -> HashMap<String, RawEntry> {
             let mut map = HashMap::new();
             for line in section.lines() {
@@ -1161,7 +1161,7 @@ async fn scan_rom_layout(
                 if rel.is_empty() { continue; }
                 map.insert(rel, RawEntry {
                     is_symlink: kind == "l",
-                    size, path, target,
+                    size, target,
                 });
             }
             map
@@ -2159,6 +2159,12 @@ fn usage() -> (String, String) {
     read_usage()
 }
 
+// True in `tauri dev`, false in every release build.
+#[tauri::command]
+fn dev_build() -> bool {
+    cfg!(debug_assertions)
+}
+
 #[tauri::command]
 fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
@@ -2319,8 +2325,11 @@ pub fn run() {
             scheduler::delete_schedule,
             send_notification,
             file_infos,
+            download::download_remote,
+            saves::scan_save_files,
             usage,
             app_version,
+            dev_build,
             cache_size,
             licensing::iap_status,
             licensing::iap_price,

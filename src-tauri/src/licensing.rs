@@ -45,6 +45,9 @@ pub struct LicenseStatus {
     store_ready: bool,
     /// False in builds with no App Store purchases at all (Windows).
     store_build: bool,
+    /// The time the trial is measured against. It ignores the clock going back,
+    /// so setting the Mac's clock back does not extend the trial.
+    now_ms: i64,
 }
 
 // ── macOS: the real StoreKit bridge ────────────────────────────────────────
@@ -55,6 +58,12 @@ pub struct LicenseStatus {
 struct License {
     owned: bool,
     trial_start_ms: i64, // 0 = trial not started
+    /// The trial time last saved, and the Mac's clock at that moment. Older
+    /// caches have neither.
+    #[serde(default)]
+    last_seen_ms: i64,
+    #[serde(default)]
+    last_clock_ms: i64,
 }
 
 #[cfg(target_os = "macos")]
@@ -86,6 +95,29 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The time to measure the trial against. It moves forward with the clock but
+/// ignores the clock going back, and is never earlier than the trial start Apple
+/// recorded. So setting the Mac's clock back cannot stretch the trial.
+#[cfg(target_os = "macos")]
+fn trial_now(app: &AppHandle, trial_start_ms: i64) -> i64 {
+    let mut c = read_cache(app);
+    let clock = now_ms();
+    let moved = if c.last_seen_ms == 0 {
+        clock
+    } else {
+        c.last_seen_ms + (clock - c.last_clock_ms).max(0)
+    };
+    let now = moved.max(trial_start_ms);
+    // Saved when the clock went back (the new clock is the base from now on),
+    // otherwise at most once a minute: every gated action passes through here.
+    if clock < c.last_clock_ms || now > c.last_seen_ms + 60_000 {
+        c.last_seen_ms = now;
+        c.last_clock_ms = clock;
+        write_cache(app, &c);
+    }
+    now
 }
 
 /// True only when the App Store answered AND knows the unlock product. StoreKit
@@ -124,7 +156,10 @@ async fn refresh_from_store(app: &AppHandle) -> Option<License> {
     } else {
         0
     };
-    let lic = License { owned: unlock.is_owned, trial_start_ms };
+    // Update the cache in place so the latest time seen survives.
+    let mut lic = read_cache(app);
+    lic.owned = unlock.is_owned;
+    lic.trial_start_ms = trial_start_ms;
     write_cache(app, &lic);
     Some(lic)
 }
@@ -160,7 +195,7 @@ pub async fn has_access(app: &AppHandle) -> bool {
         match refresh_from_store(app).await {
             None => true,
             Some(lic) if lic.owned => true,
-            Some(lic) => !(lic.trial_start_ms > 0 && now_ms() >= lic.trial_start_ms + TRIAL_MS),
+            Some(lic) => !(lic.trial_start_ms > 0 && trial_now(app, lic.trial_start_ms) >= lic.trial_start_ms + TRIAL_MS),
         }
     };
     if let Ok(mut memo) = ACCESS_MEMO.lock() {
@@ -174,11 +209,13 @@ pub async fn has_access(app: &AppHandle) -> bool {
 pub async fn iap_status(app: AppHandle) -> LicenseStatus {
     if store_ready(&app).await {
         if let Some(l) = refresh_from_store(&app).await {
-            return LicenseStatus { owned: l.owned, trial_start_ms: l.trial_start_ms, store_ready: true, store_build: true };
+            let now_ms = trial_now(&app, l.trial_start_ms);
+            return LicenseStatus { owned: l.owned, trial_start_ms: l.trial_start_ms, store_ready: true, store_build: true, now_ms };
         }
     }
     let c = read_cache(&app);
-    LicenseStatus { owned: c.owned, trial_start_ms: c.trial_start_ms, store_ready: false, store_build: true }
+    let now_ms = trial_now(&app, c.trial_start_ms);
+    LicenseStatus { owned: c.owned, trial_start_ms: c.trial_start_ms, store_ready: false, store_build: true, now_ms }
 }
 
 /// The unlock's price, formatted by the store in the user's own currency.
@@ -278,7 +315,7 @@ pub async fn has_access(_app: &AppHandle) -> bool {
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
 pub async fn iap_status(_app: AppHandle) -> LicenseStatus {
-    LicenseStatus { owned: true, trial_start_ms: 0, store_ready: false, store_build: false }
+    LicenseStatus { owned: true, trial_start_ms: 0, store_ready: false, store_build: false, now_ms: 0 }
 }
 
 #[cfg(not(target_os = "macos"))]
