@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "0.4.5.0",
+  [string]$Version = "1.0.0.0",
   [string[]]$Architectures = @("x64", "arm64")
 )
 
