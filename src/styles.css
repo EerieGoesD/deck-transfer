@@ -9,6 +9,12 @@
   --success: #4ade80;
   --error: #f87171;
   --border: #3a3d5c;
+  /* Footer (app-related/tauri2/footer_links.txt) */
+  --accent-light: #47b3ff;
+  --footer-link: #8b8b98;
+  --footer-link-hover: #d4d4d8;
+  --footer-sep: #4a4a57;
+  --coffee: #facc15;
 }
 
 * {
@@ -2597,45 +2603,71 @@ body {
 
 .footer {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
+  justify-content: space-between;
+  gap: 12px; /* version on the left, links on the right */
   padding: 6px 0 0;
-  font-size: 0.7rem;
-  color: var(--text-secondary);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
-.footer a {
+.app-version {
+  font-size: 11px;
   color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 6px; /* must match the bar margin below */
+  min-width: 0;
+  flex: 1;
+}
+
+.flink {
+  font-size: 12px;
   text-decoration: none;
-  transition: color 0.15s;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--footer-link);
 }
 
-.footer a:hover {
-  color: var(--text-primary);
+.flink:hover {
+  text-decoration: underline;
+  color: var(--footer-link-hover);
 }
 
-a.footer-author,
-a.footer-author:hover {
-  color: var(--accent);
+/* The maker credit is the one link people are meant to follow, so it carries
+   the app accent. At body colour it looks like ordinary text. */
+.flink.flink-eerie,
+.flink.flink-eerie:hover {
+  color: var(--accent-light);
   font-weight: 600;
 }
 
-a.footer-coffee,
-a.footer-coffee:hover {
-  color: #facc15;
-  font-weight: 500;
+.flink.flink-coffee,
+.flink.flink-coffee:hover {
+  color: var(--coffee);
 }
 
-.footer-sep {
-  opacity: 0.3;
-}
-
-a.footer-pro,
-a.footer-pro:hover {
+.flink.flink-pro,
+.flink.flink-pro:hover {
   color: #ffd700;
   font-weight: 600;
+}
+
+/* Vertical bar between links. Drawn on the link itself, so dropping the coffee
+   link on macOS cannot leave a dangling separator. inline-block keeps the bar
+   out of the hover underline. */
+.flink:not(:last-child)::after {
+  content: "|";
+  display: inline-block;
+  margin-left: 6px; /* same as the .footer-links gap */
+  color: var(--footer-sep);
+  font-weight: 400;
 }
 
 /* Disconnect button */

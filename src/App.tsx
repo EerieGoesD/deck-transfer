@@ -106,6 +106,17 @@ function formatBytes(n: number): string {
 
 const METRICS_KEY = "decktransfer_metrics";
 
+// Footer links (app-related/tauri2/footer_links.txt). The support links always go
+// through support.eeriegoesd.com. Support This Project goes last and is Windows
+// only: Guideline 3.1.1 bans links to outside payment from a Mac App Store build.
+const FOOTER_LINKS = [
+  { label: "Made by EERIE", url: "https://eeriegoesd.com", className: "flink-eerie" },
+  { label: "Report Issue", url: "https://support.eeriegoesd.com/report-issue/deck-transfer", className: "" },
+  { label: "Discussions", url: "https://support.eeriegoesd.com/community/deck-transfer", className: "" },
+  { label: "Feature Request", url: "https://support.eeriegoesd.com/suggest-feature/deck-transfer", className: "" },
+  ...(IS_MAC ? [] : [{ label: "Support This Project", url: "https://buymeacoffee.com/eeriegoesd", className: "flink-coffee" }]),
+];
+
 const MAX_RETRIES = 2;
 
 function App() {
@@ -192,7 +203,6 @@ function App() {
   });
 
   useEffect(() => {
-    if (!IS_MAC) return;
     invoke<string>("app_version").then(setAppVersion).catch(() => {});
   }, []);
 
@@ -2148,44 +2158,27 @@ function App() {
         </div>
       )}
 
-      <div
-        className="footer"
-        onClick={(e) => {
-          // Mac: the webview does not open new-window links, so hand them to the browser.
-          if (!IS_MAC) return;
-          const a = (e.target as HTMLElement).closest("a");
-          if (!a || !/^https?:/.test(a.href)) return;
-          e.preventDefault();
-          invoke("open_url", { url: a.href }).catch(() => {});
-        }}
-      >
-        <span>
-          Made by{" "}
-          <a href="https://eeriegoesd.com" target="_blank" rel="noreferrer" className="footer-author">
-            EERIE
-          </a>
-        </span>
-        {/* Windows only. Guideline 3.1.1 bans links to outside payment from a Mac App Store build. */}
-        {!IS_MAC && (
-          <>
-            <span className="footer-sep">|</span>
-            <a href="https://buymeacoffee.com/eeriegoesd" target="_blank" rel="noreferrer" className="footer-coffee">
-              Support This Project
+      <div className="footer">
+        {/* The Mac shows the version in the usage line under the title instead. */}
+        <span className="app-version">{!IS_MAC && appVersion ? "v" + appVersion : ""}</span>
+        <div className="footer-links">
+          {FOOTER_LINKS.map((l) => (
+            <a
+              key={l.label}
+              href="#"
+              className={`flink ${l.className}`}
+              onClick={(e) => {
+                e.preventDefault();
+                invoke("open_url", { url: l.url }).catch(() => {});
+              }}
+            >
+              {l.label}
             </a>
-          </>
-        )}
-        <span className="footer-sep">|</span>
-        <a href="https://github.com/EerieGoesD/deck-transfer/discussions" target="_blank" rel="noreferrer">Feedback</a>
-        <span className="footer-sep">|</span>
-        <a href="https://github.com/EerieGoesD/deck-transfer/issues/new?template=bug-report.md" target="_blank" rel="noreferrer">Report Issue</a>
-        <span className="footer-sep">|</span>
-        <a href="https://github.com/EerieGoesD/deck-transfer/issues/new?template=feature-request.md" target="_blank" rel="noreferrer">Suggest Feature</a>
-        {!isPro && (
-          <>
-            <span className="footer-sep">|</span>
-            <a href="#" className="footer-pro" onClick={(e) => { e.preventDefault(); setShowUpgradeModal(true); }}>Upgrade to Pro</a>
-          </>
-        )}
+          ))}
+          {!isPro && (
+            <a href="#" className="flink flink-pro" onClick={(e) => { e.preventDefault(); setShowUpgradeModal(true); }}>Upgrade to Pro</a>
+          )}
+        </div>
       </div>
 
       <input
