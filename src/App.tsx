@@ -778,14 +778,13 @@ function App() {
     }
   }, [addFiles]);
 
-  // Mac: files dragged onto the window arrive through the webview's native drop
+  // Files dragged onto the window arrive through the webview's native drop
   // event, which carries their full paths (the page's own drop event has only
   // names). Dropping on the Transfer tab queues them.
   const dropReadyRef = useRef(false);
   dropReadyRef.current =
     !!deck && activeTab === "transfer" && !transferring && !showSettings && !showConflictDialog && !lic.pageUp;
   useEffect(() => {
-    if (!IS_MAC) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     try {
