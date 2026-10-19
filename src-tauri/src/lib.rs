@@ -1450,6 +1450,153 @@ async fn check_remote_files(
     .map_err(|e| format!("Task error: {}", e))?
 }
 
+/// Bytes as a short size for error messages, e.g. "3.00 GB".
+fn short_size(n: u64) -> String {
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let n = n as f64;
+    if n >= GB {
+        format!("{:.2} GB", n / GB)
+    } else if n >= MB {
+        format!("{:.1} MB", n / MB)
+    } else {
+        format!("{:.0} KB", n / 1024.0)
+    }
+}
+
+/// Wrap a path in single quotes for the Deck's shell.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Anything the Deck's side of a channel wrote to its error output, without
+/// waiting for more.
+fn read_channel_stderr(session: &ssh2::Session, channel: &ssh2::Channel) -> Option<String> {
+    session.set_blocking(false);
+    let mut buf = [0u8; 4096];
+    let text = match channel.stderr().read(&mut buf) {
+        Ok(n) if n > 0 => Some(String::from_utf8_lossy(&buf[..n]).to_string()),
+        _ => None,
+    };
+    session.set_blocking(true);
+    text
+}
+
+/// Full error for a send that died part way: where it stopped, how long the
+/// Deck went without taking data, what the Deck's side said, and the Deck's
+/// state just after.
+#[allow(clippy::too_many_arguments)]
+fn describe_send_failure(
+    err: &std::io::Error,
+    timeout_ms: u32,
+    bytes_sent: u64,
+    total_bytes: u64,
+    started: Instant,
+    last_progress: Instant,
+    deck_message: Option<String>,
+    ip: &str,
+    password: &str,
+    remote_dir: &str,
+    remote_path: &str,
+) -> String {
+    let elapsed = started.elapsed().as_secs_f64();
+    let stalled = last_progress.elapsed().as_secs_f64();
+    let active = (elapsed - stalled).max(0.001);
+    let pct = if total_bytes > 0 { bytes_sent as f64 * 100.0 / total_bytes as f64 } else { 0.0 };
+    let limit = if timeout_ms == 0 { "none".to_string() } else { format!("{}s", timeout_ms / 1000) };
+    let deck_message = deck_message
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+
+    let mut lines = vec![
+        format!("Write error: {}", err),
+        format!(
+            "Stopped at {} of {} ({:.0}%), {:.0}s after the send started.",
+            short_size(bytes_sent), short_size(total_bytes), pct, elapsed
+        ),
+        format!("The Deck accepted no data for the last {:.0}s, then the app gave up (limit {}).", stalled, limit),
+        format!("Average speed until then: {}/s.", short_size((bytes_sent as f64 / active) as u64)),
+        format!("Message from the Deck: {}.", deck_message),
+    ];
+    lines.extend(check_deck_after_failure(ip, password, remote_dir, remote_path, elapsed as u64 + 60));
+    lines.join("\n")
+}
+
+/// Connects again after a failed send and reports the Deck's side: free space,
+/// how much of the file arrived, uptime, receiving processes still running, its
+/// network addresses, and kernel messages since the send started.
+fn check_deck_after_failure(
+    ip: &str,
+    password: &str,
+    remote_dir: &str,
+    remote_path: &str,
+    since_secs: u64,
+) -> Vec<String> {
+    let session = match create_session(ip, password) {
+        Ok(s) => s,
+        Err(e) => return vec![format!("Deck after the failure: could not reconnect ({}).", e)],
+    };
+    let script = format!(
+        r#"d={d}; f={f}
+echo "free=$(df -B1 --output=avail "$d" 2>/dev/null | tail -n1 | tr -d ' ')"
+echo "landed=$(stat -c %s "$f" 2>/dev/null)"
+echo "uptime=$(cut -d' ' -f1 /proc/uptime)"
+echo "scp=$(pgrep -c -x scp)"
+echo "sftp=$(pgrep -c -x sftp-server)"
+echo "net=$(ip -4 -br addr 2>/dev/null | tr -s ' ' | paste -sd '|' -)"
+echo "---journal---"
+journalctl -k -q --no-pager -o short --since "-{since}s" 2>&1 | tail -n 12"#,
+        d = sh_quote(remote_dir),
+        f = sh_quote(remote_path),
+        since = since_secs
+    );
+    let mut out = String::new();
+    let run = (|| -> Result<(), String> {
+        let mut ch = session.channel_session().map_err(|e| e.to_string())?;
+        ch.exec(&script).map_err(|e| e.to_string())?;
+        ch.read_to_string(&mut out).map_err(|e| e.to_string())?;
+        let _ = ch.wait_close();
+        Ok(())
+    })();
+    if let Err(e) = run {
+        return vec![format!("Deck after the failure: reconnected, but the check failed ({}).", e)];
+    }
+
+    let (values, journal) = out.split_once("---journal---").unwrap_or((out.as_str(), ""));
+    let get = |k: &str| {
+        values
+            .lines()
+            .find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('=')).map(|v| v.trim().to_string()))
+            .unwrap_or_default()
+    };
+    let free = get("free").parse::<u64>().map(short_size).unwrap_or_else(|_| "unknown".to_string());
+    let landed = get("landed").parse::<u64>().map(short_size).unwrap_or_else(|_| "not there".to_string());
+    let uptime = get("uptime")
+        .parse::<f64>()
+        .map(|s| {
+            let m = (s / 60.0) as u64;
+            format!("{}h {}m", m / 60, m % 60)
+        })
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut lines = vec![
+        format!("Deck after the failure: reachable. Free space in {}: {}.", remote_dir, free),
+        format!("Size of the file on the Deck: {}.", landed),
+        format!("Deck on for: {}.", uptime),
+        format!("Still receiving on the Deck: scp {}, sftp-server {}.", get("scp"), get("sftp")),
+        format!("Deck network: {}.", get("net")),
+    ];
+    let journal: Vec<&str> = journal.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if journal.is_empty() {
+        lines.push("Deck system messages since the send started: none.".to_string());
+    } else {
+        lines.push("Deck system messages since the send started:".to_string());
+        lines.extend(journal.into_iter().map(|l| format!("  {}", l)));
+    }
+    lines
+}
+
 #[tauri::command]
 async fn transfer_file(
     app: tauri::AppHandle,
@@ -1539,6 +1686,7 @@ async fn transfer_file(
         let mut buf = vec![0u8; chunk_size];
         let mut bytes_sent: u64 = 0;
         let start = Instant::now();
+        let mut last_progress = start;
         let state = get_transfer_state(&fid);
         state.store(0, Ordering::Relaxed);
 
@@ -1566,14 +1714,18 @@ async fn transfer_file(
                 break;
             }
 
-            remote_file
-                .write_all(&buf[..n])
-                .map_err(|e| {
-                    dbg_log("ERROR", &format!("[TRANSFER] Write failed at {} bytes: {}", bytes_sent, e));
-                    format!("Write error: {}", e)
-                })?;
+            if let Err(e) = remote_file.write_all(&buf[..n]) {
+                let deck_message = read_channel_stderr(&session, &remote_file);
+                let detail = describe_send_failure(
+                    &e, session.timeout(), bytes_sent, total_bytes, start, last_progress,
+                    deck_message, &deck_ip, &deck_password, &remote_dir, &remote_path,
+                );
+                dbg_log("ERROR", &format!("[TRANSFER] Send failed: {}\n{}", file_name, detail));
+                return Err(detail);
+            }
 
             bytes_sent += n as u64;
+            last_progress = Instant::now();
 
             // Throttle: read live speed limit and sleep to match
             let live_limit = SPEED_LIMIT.load(Ordering::Relaxed) as u64;
@@ -1797,6 +1949,7 @@ async fn transfer_batch_sftp(
             let mut buf = vec![0u8; chunk_size];
             let mut bytes_sent: u64 = 0;
             let start = Instant::now();
+            let mut last_progress = start;
             let state = get_transfer_state(&entry.file_id);
             state.store(0, Ordering::Relaxed);
 
@@ -1830,12 +1983,17 @@ async fn transfer_batch_sftp(
                 if n == 0 { break; }
 
                 if let Err(e) = remote_file.write_all(&buf[..n]) {
-                    dbg_log("ERROR", &format!("[SFTP-BATCH] Write failed for {}: {}", file_name, e));
-                    write_error = Some(format!("Write error: {}", e));
+                    let detail = describe_send_failure(
+                        &e, session.timeout(), bytes_sent, total_bytes, start, last_progress,
+                        None, &deck_ip, &deck_password, &remote_dir_clone, &remote_path,
+                    );
+                    dbg_log("ERROR", &format!("[SFTP-BATCH] Send failed: {}\n{}", file_name, detail));
+                    write_error = Some(detail);
                     break;
                 }
 
                 bytes_sent += n as u64;
+                last_progress = Instant::now();
 
                 // Throttle
                 let live_limit = SPEED_LIMIT.load(Ordering::Relaxed) as u64;
