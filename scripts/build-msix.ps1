@@ -1,7 +1,7 @@
 param(
   [string]$IdentityName = "20715EerieGoesD.DeckTransfer",
   [string]$Publisher = "CN=A2A89A47-0B2B-4C32-B85C-9753888A9FFC",
-  [string]$Version = "1.0.3.0",
+  [string]$Version = "1.0.5.0",
   [ValidateSet("x64", "x86", "arm64")]
   [string]$Architecture = "x64"
 )

@@ -19,7 +19,7 @@
     "category": "Utility",
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "bundleVersion": "6",
+      "bundleVersion": "8",
       "entitlements": "./Entitlements.plist",
       "files": {
         "embedded.provisionprofile": "embedded.provisionprofile"

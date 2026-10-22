@@ -52,6 +52,11 @@ interface RemoteDiskInfo {
   used: number;
 }
 
+interface RemoteBattery {
+  percent: number;
+  status: string;
+}
+
 interface Conflict {
   fileId: string;
   fileName: string;
@@ -144,6 +149,7 @@ function App() {
 
   const [diskInfo, setDiskInfo] = useState<RemoteDiskInfo[]>([]);
   const [diskLoading, setDiskLoading] = useState(false);
+  const [battery, setBattery] = useState<RemoteBattery | null>(null);
 
   const [dirSearch, setDirSearch] = useState("");
   const dirSearchRef = useRef<HTMLInputElement>(null);
@@ -434,6 +440,31 @@ function App() {
       setDiskInfo([]);
     }
   }, [deck, loadDiskInfo]);
+
+  const loadBattery = useCallback(async () => {
+    if (!deck) return;
+    try {
+      setBattery(
+        await invoke<RemoteBattery | null>("get_remote_battery", {
+          deckIp: deck.ip,
+          deckPassword: password,
+        })
+      );
+    } catch (e) {
+      uiLog(`get_remote_battery failed: ${e}`);
+    }
+  }, [deck, password, uiLog]);
+
+  // The battery drains or charges while connected, so read it again every 5 minutes.
+  useEffect(() => {
+    if (!deck) {
+      setBattery(null);
+      return;
+    }
+    loadBattery();
+    const timer = setInterval(loadBattery, 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [deck, loadBattery]);
 
   // Auto-scroll breadcrumbs to show the deepest folder
   useEffect(() => {
@@ -1270,6 +1301,26 @@ function App() {
           )}
         </div>
         <div className="header-right">
+          {deck && battery && (
+            <div className="header-battery" title="Steam Deck battery">
+              <div className="header-battery-icon">
+                <div className="header-battery-body">
+                  <div
+                    className="header-battery-fill"
+                    style={{
+                      width: `${battery.percent}%`,
+                      background: battery.percent >= 50 ? "#32cd32" : battery.percent >= 20 ? "#ffd700" : "#ff4500",
+                    }}
+                  />
+                </div>
+                <div className="header-battery-cap" />
+              </div>
+              <span>
+                {battery.percent}%
+                {battery.status && ` (${battery.status === "Discharging" ? "on battery" : "charging"})`}
+              </span>
+            </div>
+          )}
           {deck && (
             <div className="header-disk-bars">
               <div className="header-disk-rows">
@@ -1300,9 +1351,12 @@ function App() {
               </div>
               <button
                 className={`header-disk-refresh ${diskLoading ? "spinning" : ""}`}
-                onClick={loadDiskInfo}
+                onClick={() => {
+                  loadDiskInfo();
+                  loadBattery();
+                }}
                 disabled={diskLoading}
-                title="Refresh storage info"
+                title="Refresh storage and battery info"
               >
                 &#8635;
               </button>

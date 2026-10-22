@@ -273,7 +273,9 @@ fn try_handshake(ip: &str, password: &str, strategy: usize) -> Result<ssh2::Sess
         return Err("Authentication failed. Double-check your password.".to_string());
     }
 
-    session.set_keepalive(true, 15);
+    // No keepalive: with one set, libssh2 only waits on a busy socket until the
+    // next keepalive is due (as little as 1s) and then fails with "Timed out
+    // waiting on socket", so a brief pause on the Deck killed large sends.
     dbg_log("INFO", &format!("[SSH] Session established successfully to {}", ip));
     Ok(session)
 }
@@ -1080,6 +1082,52 @@ async fn get_remote_disk_usage(
 
         dbg_log("INFO", &format!("[DISK] Found {} disk(s)", disks.len()));
         Ok(disks)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteBattery {
+    pub percent: u8,
+    pub status: String,
+}
+
+/// The Deck's battery level and charging state, or None if it has no battery.
+#[tauri::command]
+async fn get_remote_battery(
+    app: tauri::AppHandle,
+    deck_ip: String,
+    deck_password: String,
+) -> Result<Option<RemoteBattery>, String> {
+    licensing::require_access(&app).await?;
+    tokio::task::spawn_blocking(move || {
+        let session = create_session(&deck_ip, &deck_password)?;
+
+        let cmd = "for b in /sys/class/power_supply/BAT*; do \
+                   [ -r \"$b/capacity\" ] && { echo \"$(cat \"$b/capacity\") $(cat \"$b/status\" 2>/dev/null)\"; break; }; \
+                   done";
+
+        let mut channel = session
+            .channel_session()
+            .map_err(|e| format!("Channel error: {}", e))?;
+        channel
+            .exec(cmd)
+            .map_err(|e| format!("Battery read failed: {}", e))?;
+
+        let mut out = String::new();
+        IoRead::read_to_string(&mut channel, &mut out)
+            .map_err(|e| format!("Read battery output failed: {}", e))?;
+        channel.wait_close().ok();
+
+        let mut parts = out.trim().splitn(2, ' ');
+        let percent = match parts.next().and_then(|p| p.trim().parse::<u8>().ok()) {
+            Some(p) => p.min(100),
+            None => return Ok(None),
+        };
+        let status = parts.next().unwrap_or("").trim().to_string();
+        dbg_log("INFO", &format!("[BATTERY] {}% {}", percent, status));
+        Ok(Some(RemoteBattery { percent, status }))
     })
     .await
     .map_err(|e| format!("Task error: {}", e))?
@@ -2453,6 +2501,7 @@ pub fn run() {
             rename_remote,
             delete_remote,
             get_remote_disk_usage,
+            get_remote_battery,
             scan_rom_layout,
             move_rom_file,
             rename_remote_file,
